@@ -4,9 +4,9 @@ export const lightThemeOptions: ThemeOptions = {
   palette: {
     mode: 'light',
     primary: {
-      main: '#C4590A',
-      light: '#D2691E',
-      dark: '#A04808',
+      main: '#D7691E',
+      light: '#E67E22',
+      dark: '#C4590A',
     },
     secondary: {
       main: '#00008B',
@@ -14,7 +14,7 @@ export const lightThemeOptions: ThemeOptions = {
       dark: '#000066',
     },
     background: {
-      default: '#fafafa',
+      default: '#f8f9fa',
       paper: '#ffffff',
     },
     divider: '#e0e0e0',
@@ -99,6 +99,21 @@ export const lightThemeOptions: ThemeOptions = {
         root: {
           boxShadow: '0px 2px 4px rgba(0, 0, 0, 0.1)',
           borderRadius: 8,
+          backgroundColor: '#ffffff',
+        },
+      },
+    },
+    MuiPaper: {
+      styleOverrides: {
+        root: {
+          backgroundColor: '#ffffff',
+        },
+      },
+    },
+    MuiTableContainer: {
+      styleOverrides: {
+        root: {
+          backgroundColor: '#ffffff',
         },
       },
     },
@@ -116,18 +131,18 @@ export const darkThemeOptions: ThemeOptions = {
   palette: {
     mode: 'dark',
     primary: {
-      main: '#D2691E',
-      light: '#FF8C42',
-      dark: '#A04808',
+      main: '#E67E22',
+      light: '#F39C12',
+      dark: '#D7691E',
     },
     secondary: {
-      main: '#4169E1',
-      light: '#6495ED',
+      main: '#0000CD',
+      light: '#4169E1',
       dark: '#00008B',
     },
     background: {
-      default: '#121212',
-      paper: '#1e1e1e',
+      default: '#f5f5f5',
+      paper: '#ffffff',
     },
     divider: '#424242',
     text: {
@@ -211,6 +226,7 @@ export const darkThemeOptions: ThemeOptions = {
         root: {
           boxShadow: '0px 2px 4px rgba(0, 0, 0, 0.3)',
           borderRadius: 8,
+          backgroundColor: '#ffffff',
         },
       },
     },

@@ -571,7 +571,7 @@ export default function DashboardPage() {
             <Card
               elevation={3}
               sx={{ cursor: 'pointer', '&:hover': { boxShadow: 6 } }}
-              onClick={() => setReportDialogOpen(true)}
+              onClick={() => router.push('/reports/generate?status=pendingSignature')}
             >
               <CardContent>
                 <Box display="flex" alignItems="center" justifyContent="space-between">
@@ -640,7 +640,7 @@ export default function DashboardPage() {
                 variant="contained"
                 color="info"
                 startIcon={<DescriptionIcon />}
-                onClick={() => setReportDialogOpen(true)}
+                onClick={() => router.push('/reports/generate?status=draft')}
                 size="large"
               >
                 Generate Report

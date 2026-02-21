@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Box,
   Card,
@@ -95,6 +96,7 @@ import {
   formatTime,
   formatDateTime,
 } from '@/utils/testingHelpers';
+import { getCompletedTests, saveCompletedTests } from '@/services/testingStore';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -112,6 +114,7 @@ function TabPanel(props: TabPanelProps) {
 }
 
 export default function TestingPage() {
+  const router = useRouter();
   // State
   const [activeTab, setActiveTab] = useState(0);
   const [pendingTests, setPendingTests] = useState<TestResult[]>([]);
@@ -263,10 +266,23 @@ export default function TestingPage() {
   };
 
   useEffect(() => {
+    const storedCompletedTests = getCompletedTests();
     setPendingTests(getDummyPendingTests());
     setInProgressTests(getDummyInProgressTests());
-    setCompletedTests(getDummyCompletedTests());
+    if (storedCompletedTests.length > 0) {
+      setCompletedTests(storedCompletedTests);
+    } else {
+      const seededCompletedTests = getDummyCompletedTests();
+      setCompletedTests(seededCompletedTests);
+      saveCompletedTests(seededCompletedTests);
+    }
   }, []);
+
+  useEffect(() => {
+    if (completedTests.length > 0) {
+      saveCompletedTests(completedTests);
+    }
+  }, [completedTests]);
 
   useEffect(() => {
     setStats({
@@ -492,6 +508,10 @@ export default function TestingPage() {
     setSnackbar({ open: true, message: 'Sending to printer...', severity: 'info' });
   };
 
+  const handleGenerateReport = (test: TestResult) => {
+    router.push(`/reports/generate?sampleId=${encodeURIComponent(test.sample.sampleID)}`);
+  };
+
   const filteredPendingTests = useMemo(() => {
     let filtered = [...pendingTests];
     if (pendingFilters.search) {
@@ -605,12 +625,17 @@ export default function TestingPage() {
     {
       field: 'actions',
       headerName: 'Actions',
-      width: 130,
+      width: 180,
       renderCell: (params) => (
         <Box>
           <Tooltip title="View">
             <IconButton size="small" color="primary" onClick={() => handleViewResults(params.row)}>
               <ViewIcon />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Generate Report">
+            <IconButton size="small" color="secondary" onClick={() => handleGenerateReport(params.row)}>
+              <ReportIcon />
             </IconButton>
           </Tooltip>
           <Tooltip title="Print">
@@ -645,9 +670,11 @@ export default function TestingPage() {
             </Button>
             <Button variant="outlined" startIcon={<ScanIcon />} sx={{ mr: 1 }}>Scan</Button>
             <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => {
+              const refreshedCompletedTests = getDummyCompletedTests();
               setPendingTests(getDummyPendingTests());
               setInProgressTests(getDummyInProgressTests());
-              setCompletedTests(getDummyCompletedTests());
+              setCompletedTests(refreshedCompletedTests);
+              saveCompletedTests(refreshedCompletedTests);
               setSnackbar({ open: true, message: 'Data refreshed', severity: 'success' });
             }}>Refresh</Button>
             <Button variant="outlined" startIcon={<ExportIcon />} sx={{ ml: 1 }} onClick={() => setExportDialogOpen(true)}>

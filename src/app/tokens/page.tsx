@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { QRCodeSVG as QRCode } from 'qrcode.react';
 import Barcode from 'react-barcode' assert { type: 'module' };
@@ -139,10 +140,15 @@ import {
   isBookingOverdue,
   debounce,
 } from '@/utils/tokenHelpers';
+import { getBookings, saveBookings } from '@/services/bookingStore';
+import { addHomePickup, generatePickupId } from '@/services/homeCollectionStore';
+import type { HomePickup } from '@/types/homeCollection';
+import { createInvoiceFromBooking } from '@/services/billingStore';
 
 type DialogType = 'none' | 'tokenDetails' | 'quickAddPatient' | 'printSettings' | 'scanning';
 
 export default function TokensPage() {
+  const router = useRouter();
   // Main state
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
@@ -203,13 +209,26 @@ export default function TokensPage() {
   const loadData = () => {
     setLoading(true);
     setTimeout(() => {
+      const storedBookings = getBookings();
       setPatients(getDummyPatients());
       setAvailableTests(getDummyTests());
       setAvailablePackages(getDummyPackages());
-      setBookings(getDummyBookings());
+      if (storedBookings.length > 0) {
+        setBookings(storedBookings);
+      } else {
+        const seededBookings = getDummyBookings();
+        setBookings(seededBookings);
+        saveBookings(seededBookings);
+      }
       setLoading(false);
     }, 1000);
   };
+
+  useEffect(() => {
+    if (bookings.length > 0) {
+      saveBookings(bookings);
+    }
+  }, [bookings]);
 
   const showSnackbar = (message: string, severity: 'success' | 'error' | 'info' | 'warning' = 'success') => {
     setSnackbar({ open: true, message, severity });
@@ -356,6 +375,49 @@ export default function TokensPage() {
 
     // Add to bookings list
     setBookings(prev => [booking, ...prev]);
+
+    // Create Home Pickup record if booking type is Home Collection
+    if (formData.bookingType === 'HomeCollection' && formData.homeCollectionAddress) {
+      const pickupId = generatePickupId();
+      
+      // Parse address (basic parsing, can be enhanced)
+      const addressParts = formData.homeCollectionAddress.split(',').map(s => s.trim());
+      const homePickup: HomePickup = {
+        pickupId,
+        bookingId: bookingID,
+        sampleId: sampleID,
+        patientId: selectedPatient.id,
+        patientName: selectedPatient.name,
+        patientMobile: selectedPatient.mobile,
+        testName: selectedTests.map(t => t.testName).join(', '),
+        address: {
+          line: addressParts[0] || formData.homeCollectionAddress,
+          area: addressParts[1] || '',
+          city: addressParts[2] || '',
+          pincode: addressParts[3] || '',
+          landmark: formData.specialInstructions,
+        },
+        preferredSlot: {
+          date: formData.preferredDate || now.toISOString().split('T')[0],
+          timeWindow: formData.preferredTimeSlot || '09:00 AM - 12:00 PM',
+        },
+        status: 'Pending',
+        priority: formData.priority === 'Urgent' ? 'Urgent' : 'Normal',
+        amount: amounts.finalAmount,
+        paymentStatus: 'Pending',
+        notes: formData.specialInstructions,
+        audit: [{
+          at: now.toISOString(),
+          by: 'System',
+          action: 'Home Pickup Created',
+          notes: 'Created from token booking',
+        }],
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      };
+      
+      addHomePickup(homePickup);
+    }
 
     // Generate QR and Barcode data (mock)
     const qrData = `${tokenNumber}|${selectedPatient.id}|${sampleID}`;
@@ -1368,10 +1430,29 @@ export default function TokensPage() {
         <DialogActions sx={{ p: 2 }}>
           <Button
             onClick={() => {
+              if (generatedToken?.booking) {
+                try {
+                  createInvoiceFromBooking(generatedToken.booking, 'Staff');
+                  setShowTokenSuccess(false);
+                  router.push('/billing');
+                  showSnackbar('Invoice created successfully!', 'success');
+                } catch (error) {
+                  showSnackbar('Failed to create invoice', 'error');
+                }
+              }
+            }}
+            variant="contained"
+            color="success"
+            startIcon={<AddIcon />}
+          >
+            Create Invoice
+          </Button>
+          <Button
+            onClick={() => {
               handlePrint();
               setShowTokenSuccess(false);
             }}
-            variant="contained"
+            variant="outlined"
             startIcon={<PrintIcon />}
           >
             Print Token

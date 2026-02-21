@@ -39,15 +39,14 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     // Only run on client side
     setIsMounted(true);
     
-    // Get theme preference from localStorage or system preference
+    // Get theme preference from localStorage, default to light for pathology lab
     const storedTheme = localStorage.getItem('theme-mode') as ThemeMode | null;
     
     if (storedTheme) {
       setMode(storedTheme);
     } else {
-      // Check system preference
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      setMode(prefersDark ? 'dark' : 'light');
+      // Default to light mode for pathology lab environment
+      setMode('light');
     }
   }, []);
 

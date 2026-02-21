@@ -1,2589 +1,1371 @@
 'use client';
 
-// Report Generation Module - Main Page
-// Comprehensive report generation system for pathologists and lab staff
-
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
+  Alert,
   Box,
-  Typography,
-  Paper,
-  Grid,
+  Button,
   Card,
   CardContent,
-  TextField,
-  Button,
+  Checkbox,
   Chip,
   Dialog,
-  DialogTitle,
-  DialogContent,
   DialogActions,
-  Tabs,
-  Tab,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
-  FormControlLabel,
-  Checkbox,
-  Radio,
-  RadioGroup,
-  IconButton,
-  Badge,
-  Snackbar,
-  Alert,
-  Slider,
-  Autocomplete,
-  Tooltip,
-  CircularProgress,
-  Menu,
+  DialogContent,
+  DialogTitle,
   Divider,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemIcon,
-  InputAdornment,
+  FormControl,
+  FormControlLabel,
+  Grid,
+  IconButton,
+  InputLabel,
+  MenuItem,
+  Select,
+  Snackbar,
+  Stack,
   Switch,
+  Tab,
+  Tabs,
+  TextField,
+  Tooltip,
+  Typography,
 } from '@mui/material';
-import { DataGrid, GridColDef, GridRowSelectionModel } from '@mui/x-data-grid';
-import SignatureCanvas from 'react-signature-canvas';
 import {
-  Assignment as AssignmentIcon,
-  Drafts as DraftsIcon,
-  Publish as PublishIcon,
-  Draw as DrawIcon,
-  ReportProblem as ReportProblemIcon,
-  Search as SearchIcon,
-  FilterList as FilterListIcon,
-  Refresh as RefreshIcon,
-  GetApp as GetAppIcon,
-  Print as PrintIcon,
-  Visibility as VisibilityIcon,
-  Edit as EditIcon,
-  CloudUpload as CloudUploadIcon,
-  Send as SendIcon,
-  Save as SaveIcon,
-  CheckCircle as CheckCircleIcon,
-  Cancel as CancelIcon,
-  ZoomIn as ZoomInIcon,
-  ZoomOut as ZoomOutIcon,
-  Close as CloseIcon,
-  AccessTime as TimeIcon,
-  Delete as DeleteIcon,
   Add as AddIcon,
-  Warning as WarningIcon,
+  Description as DescriptionIcon,
+  Draw as SignatureIcon,
+  Edit as EditIcon,
+  FileUpload as FileUploadIcon,
+  Print as PrintIcon,
+  Publish as PublishIcon,
+  Send as SendIcon,
+  Visibility as VisibilityIcon,
 } from '@mui/icons-material';
-import {
-  TestResult,
-  ReportData,
-  Pathologist,
-  DraftReport,
-  PublishedReport,
-  QuickStats,
-  ReportFilters,
-  Priority,
-  ReportSettings,
-  DeliveryOptions,
-  ValidationResult,
-  RemarksTemplate,
-  Parameter,
-} from '@/types/report';
-import {
-  generateReportID,
-  generateAutoInterpretation,
-  validateReport,
-  calculateTATStatus,
-  formatDate,
-  getPriorityColor,
-  getPriorityIcon,
-} from '@/utils/reportHelpers';
-import { generateReportPDF } from '@/utils/pdfGenerator';
-import { sendReportNotifications, printReport } from '@/services/notifications';
+import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import DashboardLayout from '@/components/layout/DashboardLayout';
+import { useAuth } from '@/contexts/AuthContext';
+import { getBookings } from '@/services/bookingStore';
+import {
+  addAuditEvent,
+  getReports,
+  publishReport,
+  upsertReport,
+} from '@/services/reportStore';
+import { getCompletedTests } from '@/services/testingStore';
+import { Booking } from '@/types/token';
+import { ParameterValue, TestResult } from '@/types/testing';
+import {
+  Report,
+  ReportCriticalFlag,
+  ReportStatus,
+  SignatureType,
+} from '@/types/reportGeneration';
 
-// Dummy data for development
-const generateDummyTestResults = (): TestResult[] => {
-  const departments = ['Hematology', 'Biochemistry', 'Microbiology', 'Serology', 'Immunology'];
-  const tests = [
-    { name: 'Complete Blood Count (CBC)', dept: 'Hematology' },
-    { name: 'Liver Function Test (LFT)', dept: 'Biochemistry' },
-    { name: 'Kidney Function Test (KFT)', dept: 'Biochemistry' },
-    { name: 'Lipid Profile', dept: 'Biochemistry' },
-    { name: 'Thyroid Profile', dept: 'Biochemistry' },
-    { name: 'Blood Sugar (Fasting)', dept: 'Biochemistry' },
-    { name: 'HbA1c', dept: 'Biochemistry' },
-    { name: 'Urine Routine', dept: 'Biochemistry' },
-    { name: 'Culture & Sensitivity', dept: 'Microbiology' },
-    { name: 'HIV', dept: 'Serology' },
-    { name: 'HBsAg', dept: 'Serology' },
-  ];
+interface QueueRow {
+  id: string;
+  token: string;
+  sampleId: string;
+  patientId: string;
+  patientName: string;
+  patientMobile: string;
+  bookingId: string;
+  packageId?: string;
+  tests: TestResult[];
+  critical: boolean;
+  status: ReportStatus | 'ReadyToGenerate';
+  updatedAt: string;
+  reportId?: string;
+  hasQcIssue: boolean;
+  bookingDate?: string;
+}
 
-  const firstNames = ['Rajesh', 'Priya', 'Amit', 'Neha', 'Vikram', 'Anita', 'Sanjay', 'Pooja', 'Rahul', 'Kavita'];
-  const lastNames = ['Kumar', 'Sharma', 'Patel', 'Singh', 'Verma', 'Gupta', 'Reddy', 'Iyer', 'Mehta', 'Shah'];
+type StatusFilter = 'All' | 'ReadyToGenerate' | ReportStatus;
 
-  const results: TestResult[] = [];
+const REPORT_EDITOR_TABS = ['Summary', 'Results', 'Meta'];
 
-  for (let i = 0; i < 35; i++) {
-    const test = tests[Math.floor(Math.random() * tests.length)];
-    const priority: Priority = Math.random() > 0.8 ? 'Critical' : Math.random() > 0.6 ? 'Urgent' : 'Normal';
-    const hasCritical = priority === 'Critical' || Math.random() > 0.9;
+const toDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 
-    const collectionDate = new Date();
-    collectionDate.setHours(collectionDate.getHours() - Math.floor(Math.random() * 24));
-
-    const tatDeadline = new Date(collectionDate);
-    tatDeadline.setHours(tatDeadline.getHours() + (priority === 'Critical' ? 2 : priority === 'Urgent' ? 6 : 24));
-
-    const testCompleted = new Date(collectionDate);
-    testCompleted.setHours(testCompleted.getHours() + 2 + Math.random() * 4);
-
-    const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
-    const lastName = lastNames[Math.floor(Math.random() * lastNames.length)];
-
-    // Generate parameters based on test type
-    let parameters: Parameter[] = [];
-    if (test.name.includes('CBC')) {
-      parameters = [
-        { name: 'Hemoglobin', result: (12 + Math.random() * 5).toFixed(1), unit: 'g/dL', normalRange: '13.0 - 17.0 (M)', flag: Math.random() > 0.7 ? 'L' : undefined, category: 'Red Blood Cells' },
-        { name: 'RBC Count', result: (4 + Math.random() * 1.5).toFixed(2), unit: 'million/µL', normalRange: '4.5 - 5.5 (M)', flag: '', category: 'Red Blood Cells' },
-        { name: 'WBC Count', result: Math.floor(4000 + Math.random() * 10000), unit: 'cells/µL', normalRange: '4,000 - 11,000', flag: hasCritical ? 'HH' : Math.random() > 0.8 ? 'H' : '', isCritical: hasCritical, category: 'White Blood Cells' },
-        { name: 'Platelet Count', result: (1.5 + Math.random() * 3).toFixed(1), unit: 'lakhs/µL', normalRange: '1.5 - 4.5', flag: '', category: 'Platelets' },
-      ];
-    } else if (test.name.includes('LFT')) {
-      parameters = [
-        { name: 'Total Bilirubin', result: (0.3 + Math.random() * 1).toFixed(2), unit: 'mg/dL', normalRange: '0.3 - 1.2', flag: undefined },
-        { name: 'SGOT (AST)', result: Math.floor(15 + Math.random() * 40), unit: 'U/L', normalRange: '15 - 40', flag: undefined },
-        { name: 'SGPT (ALT)', result: Math.floor(10 + Math.random() * 45), unit: 'U/L', normalRange: '10 - 40', flag: Math.random() > 0.8 ? 'H' : undefined },
-        { name: 'Alkaline Phosphatase', result: Math.floor(40 + Math.random() * 90), unit: 'U/L', normalRange: '40 - 130', flag: undefined },
-      ];
-    } else {
-      parameters = [
-        { name: 'Test Parameter 1', result: (50 + Math.random() * 50).toFixed(1), unit: 'units', normalRange: '40 - 100', flag: undefined },
-        { name: 'Test Parameter 2', result: (30 + Math.random() * 40).toFixed(1), unit: 'units', normalRange: '20 - 60', flag: undefined },
-      ];
-    }
-
-    results.push({
-      id: `test-${i + 1}`,
-      sampleId: `SMP-20260205-${String(i + 1).padStart(4, '0')}`,
-      tokenNumber: `TOK-20260205-${String(i + 1).padStart(4, '0')}`,
-      patientId: `PAT-${String(1000 + i).padStart(6, '0')}`,
-      patientName: `${firstName} ${lastName}`,
-      age: 20 + Math.floor(Math.random() * 60),
-      gender: Math.random() > 0.5 ? 'Male' : 'Female',
-      testName: test.name,
-      department: test.dept,
-      testCompletedTime: testCompleted,
-      tatDeadline: tatDeadline,
-      priority: priority,
-      hasCriticalValues: hasCritical,
-      assignedPathologist: Math.random() > 0.5 ? undefined : ['Dr. Rajesh Kumar', 'Dr. Priya Sharma', 'Dr. Amit Verma'][Math.floor(Math.random() * 3)],
-      reportStatus: 'Ready',
-      referredBy: Math.random() > 0.3 ? ['Dr. Shah', 'Dr. Mehta', 'Dr. Gupta', 'Dr. Singh'][Math.floor(Math.random() * 4)] : undefined,
-      mobile: `98765${String(10000 + Math.floor(Math.random() * 90000))}`,
-      email: Math.random() > 0.4 ? `${firstName.toLowerCase()}.${lastName.toLowerCase()}@email.com` : undefined,
-      collectionDate: collectionDate,
-      sampleType: ['EDTA Whole Blood', 'Serum', 'Plasma', 'Urine'][Math.floor(Math.random() * 4)],
-      fastingStatus: Math.random() > 0.5 ? 'Fasting' : 'Non-Fasting',
-      parameters: parameters,
-    });
+const getStatusColor = (status: QueueRow['status']) => {
+  switch (status) {
+    case 'Draft':
+      return 'warning';
+    case 'PendingSignature':
+      return 'info';
+    case 'Published':
+      return 'success';
+    case 'Amended':
+      return 'secondary';
+    case 'Cancelled':
+      return 'default';
+    default:
+      return 'primary';
   }
-
-  return results;
 };
 
-const pathologists: Pathologist[] = [
-  { id: 'path-1', name: 'Dr. Rajesh Kumar', qualification: 'MBBS, MD (Pathology)', registrationNumber: 'MCI-12345' },
-  { id: 'path-2', name: 'Dr. Priya Sharma', qualification: 'MBBS, MD (Pathology)', registrationNumber: 'MCI-12346' },
-  { id: 'path-3', name: 'Dr. Amit Verma', qualification: 'MBBS, MD (Pathology)', registrationNumber: 'MCI-12347' },
-  { id: 'path-4', name: 'Dr. Neha Patel', qualification: 'MBBS, MD (Pathology)', registrationNumber: 'MCI-12348' },
-  { id: 'path-5', name: 'Dr. Vikram Singh', qualification: 'MBBS, MD (Pathology)', registrationNumber: 'MCI-12349' },
-];
+const formatDateTime = (value?: string): string => {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleString();
+};
 
-const remarksTemplates: RemarksTemplate[] = [
-  { id: '1', category: 'Normal Results', title: 'All Normal', content: 'All parameters are within normal limits. No significant abnormality detected.', useCount: 245 },
-  { id: '2', category: 'Mild Abnormalities', title: 'Mild Abnormality', content: 'Mild abnormality detected in some parameters. Clinical correlation is advised. Follow-up testing may be recommended.', useCount: 120 },
-  { id: '3', category: 'Significant Findings', title: 'Significant Findings', content: 'Significant findings noted. Immediate clinical correlation is strongly recommended. Please consult with the treating physician.', useCount: 85 },
-  { id: '4', category: 'Critical Results', title: 'Critical Values', content: 'Critical values detected. Immediate medical attention is recommended. Patient/physician has been notified as per protocol.', useCount: 42 },
-  { id: '5', category: 'Follow-up', title: 'Recommend Follow-up', content: 'Follow-up testing is recommended after 2-4 weeks. Please correlate with clinical findings and treatment response.', useCount: 95 },
-];
+const getCriticalFlags = (tests: TestResult[]): ReportCriticalFlag[] => {
+  const flags: ReportCriticalFlag[] = [];
 
-export default function ReportGenerationPage() {
-  // State management
-  const [activeTab, setActiveTab] = useState<number>(0);
-  const [testResults, setTestResults] = useState<TestResult[]>(generateDummyTestResults());
-  const [draftReports, setDraftReports] = useState<DraftReport[]>([]);
-  const [publishedReports, setPublishedReports] = useState<PublishedReport[]>([]);
-  const [selectedRows, setSelectedRows] = useState<GridRowSelectionModel>({ type: 'include', ids: new Set() });
-  const [filters, setFilters] = useState<ReportFilters>({
-    search: '',
-    department: 'All',
-    testCategory: 'All',
-    priority: 'All',
-    dateRange: { start: null, end: null },
-    pathologist: 'All',
-    sortBy: 'TAT',
+  tests.forEach((test) => {
+    test.parameterValues.forEach((parameter: ParameterValue) => {
+      if (parameter.isCritical || parameter.flag === 'Critical') {
+        flags.push({
+          testId: test.id,
+          parameter: parameter.parameterName,
+          value: String(parameter.value),
+        });
+      }
+    });
   });
 
-  // Dialog states
-  const [generateDialogOpen, setGenerateDialogOpen] = useState(false);
-  const [selectedTest, setSelectedTest] = useState<TestResult | null>(null);
-  const [currentReportData, setCurrentReportData] = useState<Partial<ReportData> | null>(null);
+  return flags;
+};
 
-  // Generate report dialog states
-  const [reportTab, setReportTab] = useState<number>(0);
-  const [interpretation, setInterpretation] = useState<string>('');
-  const [clinicalNotes, setClinicalNotes] = useState<string>('');
-  const [criticalComments, setCriticalComments] = useState<string>('');
-  const [selectedPathologist, setSelectedPathologist] = useState<Pathologist | null>(null);
-  const [signatureType, setSignatureType] = useState<'digital' | 'drawn' | 'none'>('none');
-  const [signatureData, setSignatureData] = useState<string>('');
-  const [certificationAccepted, setCertificationAccepted] = useState(false);
-  const [zoomLevel, setZoomLevel] = useState<number>(100);
+const buildReportPreviewHTML = (report: Report, row: QueueRow): string => {
+  const testsHtml = row.tests
+    .map(
+      (test) => `
+        <h3 style="margin-top:16px;">${test.test.testName}</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr>
+              <th style="border:1px solid #ddd;padding:6px;text-align:left;">Parameter</th>
+              <th style="border:1px solid #ddd;padding:6px;text-align:left;">Value</th>
+              <th style="border:1px solid #ddd;padding:6px;text-align:left;">Unit</th>
+              <th style="border:1px solid #ddd;padding:6px;text-align:left;">Range</th>
+              <th style="border:1px solid #ddd;padding:6px;text-align:left;">Flag</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${test.parameterValues
+              .map(
+                (parameter) => `
+                  <tr>
+                    <td style="border:1px solid #ddd;padding:6px;">${parameter.parameterName}</td>
+                    <td style="border:1px solid #ddd;padding:6px;">${parameter.value}</td>
+                    <td style="border:1px solid #ddd;padding:6px;">${parameter.unit}</td>
+                    <td style="border:1px solid #ddd;padding:6px;">${parameter.normalRange}</td>
+                    <td style="border:1px solid #ddd;padding:6px;">${parameter.flag || '-'}</td>
+                  </tr>
+                `
+              )
+              .join('')}
+          </tbody>
+        </table>
+      `
+    )
+    .join('');
 
-  // Report settings
-  const [reportSettings, setReportSettings] = useState<ReportSettings>({
-    includeGraphs: false,
-    includePreviousResults: false,
-    includeReferenceImages: false,
-    includeQCStatement: true,
-    includeMethodology: true,
-    showNABLLogo: true,
-    showRegistrationNumbers: true,
-    showPageNumbers: true,
-    language: 'English',
-    watermark: { enabled: false, text: 'DUPLICATE', opacity: 30 },
-  });
+  return `
+    <html>
+      <head>
+        <title>${report.reportId}</title>
+      </head>
+      <body style="font-family:Arial, sans-serif; margin:24px;">
+        <h2>NXA Pathology Lab</h2>
+        <p><strong>Report ID:</strong> ${report.reportId}</p>
+        <p><strong>Token:</strong> ${row.token}</p>
+        <p><strong>Sample ID:</strong> ${row.sampleId}</p>
+        <p><strong>Patient:</strong> ${row.patientName}</p>
+        <p><strong>Status:</strong> ${report.status}</p>
+        <p><strong>Pathologist:</strong> ${report.pathologist.name || '-'}</p>
+        <p><strong>Registration:</strong> ${report.pathologist.registrationNo || '-'}</p>
+        <p><strong>Remarks:</strong> ${report.remarks || '-'}</p>
+        ${testsHtml}
+      </body>
+    </html>
+  `;
+};
 
-  // Delivery options
-  const [deliveryOptions, setDeliveryOptions] = useState<DeliveryOptions>({
-    notifyPatient: { sms: true, email: true, whatsapp: false },
-    notifyDoctor: false,
-    doctorEmail: '',
-    uploadToPortal: true,
-    uploadToABDM: false,
-    print: { enabled: false, copies: 1, printer: undefined },
-  });
+export default function ReportGeneratePage() {
+  const { user } = useAuth();
+  const searchParams = useSearchParams();
+  const currentUser = user?.name || user?.id || 'lab_staff';
 
-  // UI states
-  const [loading, setLoading] = useState(false);
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'warning' | 'info' }>({
+  const [completedTests, setCompletedTests] = useState<TestResult[]>([]);
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [reports, setReports] = useState<Report[]>([]);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [criticalOnly, setCriticalOnly] = useState(false);
+
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorTab, setEditorTab] = useState(0);
+  const [selectedRow, setSelectedRow] = useState<QueueRow | null>(null);
+  const [editingReport, setEditingReport] = useState<Report | null>(null);
+  const [criticalHandled, setCriticalHandled] = useState(false);
+  const [criticalHandledNote, setCriticalHandledNote] = useState('');
+
+  const [qcOverrideDialogOpen, setQcOverrideDialogOpen] = useState(false);
+  const [qcOverrideReason, setQcOverrideReason] = useState('');
+  const [pendingGenerateRow, setPendingGenerateRow] = useState<QueueRow | null>(null);
+
+  const [publishConfirmRow, setPublishConfirmRow] = useState<QueueRow | null>(null);
+
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState('');
+
+  const [signDialogOpen, setSignDialogOpen] = useState(false);
+  const [signTarget, setSignTarget] = useState<QueueRow | null>(null);
+  const [signType, setSignType] = useState<SignatureType>('Typed');
+  const [signName, setSignName] = useState('');
+  const [signRegistrationNo, setSignRegistrationNo] = useState('');
+  const [signImageDataUrl, setSignImageDataUrl] = useState<string | undefined>(undefined);
+
+  const uploadPdfInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadSignatureInputRef = useRef<HTMLInputElement | null>(null);
+  const [pdfUploadTarget, setPdfUploadTarget] = useState<QueueRow | null>(null);
+
+  const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
-    severity: 'success',
+    severity: 'success' as 'success' | 'error' | 'info' | 'warning',
   });
-  const [validationDialogOpen, setValidationDialogOpen] = useState(false);
-  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
-  const [uploadExternalDialogOpen, setUploadExternalDialogOpen] = useState(false);
-  const [externalReportFile, setExternalReportFile] = useState<File | null>(null);
-  const [externalReportName, setExternalReportName] = useState<string>('');
-  const [externalReportNotes, setExternalReportNotes] = useState<string>('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false);
-  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
 
-  // New feature states
-  const [bulkGenerateDialogOpen, setBulkGenerateDialogOpen] = useState(false);
-  const [reportTemplateDialogOpen, setReportTemplateDialogOpen] = useState(false);
-  const [scheduleReportDialogOpen, setScheduleReportDialogOpen] = useState(false);
-  const [reportHistoryDialogOpen, setReportHistoryDialogOpen] = useState(false);
-  const [bulkPublishDialogOpen, setBulkPublishDialogOpen] = useState(false);
-  const [exportReportDialogOpen, setExportReportDialogOpen] = useState(false);
-  const [templatePreviewDialogOpen, setTemplatePreviewDialogOpen] = useState(false);
+  const showSnackbar = (
+    message: string,
+    severity: 'success' | 'error' | 'info' | 'warning' = 'success'
+  ) => {
+    setSnackbar({ open: true, message, severity });
+  };
 
-  // Bulk operations state
-  const [selectedTemplate, setSelectedTemplate] = useState<'standard' | 'detailed' | 'summary'>('standard');
-  const [scheduleDate, setScheduleDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [scheduleTime, setScheduleTime] = useState<string>('09:00');
-  const [exportFormat, setExportFormat] = useState<'pdf' | 'excel' | 'csv' | 'docx'>('pdf');
-  const [bulkPublishFormat, setBulkPublishFormat] = useState<'pdf' | 'email' | 'print'>('pdf');
-  const [reportHistory, setReportHistory] = useState<PublishedReport[]>([]);
-  const [historyFilter, setHistoryFilter] = useState<'all' | 'week' | 'month' | 'quarter'>('all');
+  const refreshData = () => {
+    setCompletedTests(getCompletedTests());
+    setBookings(getBookings());
+    setReports(getReports());
+  };
 
-  // Signature canvas ref
-  const signatureCanvasRef = useRef<SignatureCanvas>(null);
-
-  // Auto-refresh
   useEffect(() => {
-    const interval = setInterval(() => {
-      // In production, fetch fresh data from API
-      console.log('Auto-refreshing data...');
-    }, 30000); // 30 seconds
-
-    return () => clearInterval(interval);
+    refreshData();
   }, []);
 
-  // Calculate quick stats
-  const quickStats: QuickStats = useMemo(() => {
+  useEffect(() => {
+    const status = searchParams.get('status') as StatusFilter | null;
+    const sample = searchParams.get('sampleId');
+
+    if (status) {
+      setStatusFilter(status);
+    }
+
+    if (sample) {
+      setSearchQuery(sample);
+    }
+  }, [searchParams]);
+
+  const queueRows = useMemo<QueueRow[]>(() => {
+    const groupedBySample = new Map<string, TestResult[]>();
+
+    completedTests
+      .filter((test) => test.status === 'Completed')
+      .forEach((test) => {
+        const key = test.sample.sampleID;
+        const existing = groupedBySample.get(key) || [];
+        existing.push(test);
+        groupedBySample.set(key, existing);
+      });
+
+    const rows: QueueRow[] = [];
+
+    groupedBySample.forEach((tests, sampleId) => {
+      const first = tests[0];
+      const report = reports.find((entry) => entry.sampleId === sampleId);
+      const booking = bookings.find(
+        (entry) =>
+          entry.sample.sampleID === sampleId ||
+          entry.tokenNumber === first.sample.tokenNumber ||
+          entry.bookingID === first.sample.tokenNumber
+      );
+
+      rows.push({
+        id: sampleId,
+        token: first.sample.tokenNumber,
+        sampleId,
+        patientId: booking?.patientID || first.patient.id,
+        patientName: booking?.patientName || first.patient.name,
+        patientMobile: booking?.patientMobile || first.patient.mobile,
+        bookingId: booking?.bookingID || first.sample.tokenNumber,
+        packageId: booking?.selectedPackage?.id,
+        tests,
+        critical: tests.some((item) => item.hasCriticalValues),
+        status: report?.status || 'ReadyToGenerate',
+        updatedAt:
+          report?.updatedAt ||
+          tests
+            .map((item) => item.completedAt || item.startedAt || new Date().toISOString())
+            .sort()
+            .reverse()[0],
+        reportId: report?.reportId,
+        hasQcIssue: tests.some((item) => item.qcStatus && item.qcStatus !== 'Passed'),
+        bookingDate: booking?.bookingDate,
+      });
+    });
+
+    return rows.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  }, [completedTests, bookings, reports]);
+
+  const filteredRows = useMemo(() => {
+    let rows = [...queueRows];
+
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      rows = rows.filter((row) =>
+        [
+          row.patientName,
+          row.patientMobile,
+          row.token,
+          row.sampleId,
+          row.reportId || '',
+        ]
+          .join(' ')
+          .toLowerCase()
+          .includes(query)
+      );
+    }
+
+    if (statusFilter !== 'All') {
+      rows = rows.filter((row) => row.status === statusFilter);
+    }
+
+    if (criticalOnly) {
+      rows = rows.filter((row) => row.critical);
+    }
+
+    if (dateFrom || dateTo) {
+      rows = rows.filter((row) => {
+        const baseDate = row.bookingDate || row.updatedAt;
+        if (!baseDate) return false;
+
+        const value = new Date(baseDate);
+        if (Number.isNaN(value.getTime())) return false;
+
+        if (dateFrom) {
+          const fromDate = new Date(dateFrom);
+          if (value < fromDate) return false;
+        }
+
+        if (dateTo) {
+          const toDate = new Date(dateTo);
+          toDate.setHours(23, 59, 59, 999);
+          if (value > toDate) return false;
+        }
+
+        return true;
+      });
+    }
+
+    return rows;
+  }, [queueRows, searchQuery, statusFilter, criticalOnly, dateFrom, dateTo]);
+
+  const stats = useMemo(() => {
+    const today = new Date().toDateString();
+
     return {
-      readyForReport: testResults.filter(t => t.reportStatus === 'Ready').length,
-      draftReports: draftReports.length,
-      publishedToday: publishedReports.filter(r => {
-        const today = new Date();
-        const pubDate = new Date(r.publishedTime);
-        return pubDate.toDateString() === today.toDateString();
-      }).length,
-      pendingSignature: testResults.filter(t => t.reportStatus === 'Review').length,
-      criticalReports: testResults.filter(t => t.hasCriticalValues).length,
+      readyToGenerate: queueRows.filter((row) => row.status === 'ReadyToGenerate').length,
+      draft: queueRows.filter((row) => row.status === 'Draft').length,
+      pendingSignature: queueRows.filter((row) => row.status === 'PendingSignature').length,
+      publishedToday: queueRows.filter(
+        (row) =>
+          row.status === 'Published' && new Date(row.updatedAt).toDateString() === today
+      ).length,
     };
-  }, [testResults, draftReports, publishedReports]);
+  }, [queueRows]);
 
-  // Filtered test results
-  const filteredTestResults = useMemo(() => {
-    return testResults.filter(test => {
-      if (filters.search && !test.patientName.toLowerCase().includes(filters.search.toLowerCase()) &&
-          !test.sampleId.toLowerCase().includes(filters.search.toLowerCase()) &&
-          !test.tokenNumber.toLowerCase().includes(filters.search.toLowerCase())) {
-        return false;
-      }
-      if (filters.department !== 'All' && test.department !== filters.department) {
-        return false;
-      }
-      if (filters.priority !== 'All' && test.priority !== filters.priority) {
-        return false;
-      }
-      if (filters.pathologist !== 'All') {
-        if (filters.pathologist === 'Assigned to Me' && !test.assignedPathologist) {
-          return false;
-        }
-        if (filters.pathologist === 'Unassigned' && test.assignedPathologist) {
-          return false;
-        }
-      }
-      return true;
-    }).sort((a, b) => {
-      if (filters.sortBy === 'TAT') {
-        return new Date(a.tatDeadline).getTime() - new Date(b.tatDeadline).getTime();
-      } else if (filters.sortBy === 'Priority') {
-        const priorityOrder = { Critical: 0, Urgent: 1, Normal: 2 };
-        return priorityOrder[a.priority] - priorityOrder[b.priority];
-      } else {
-        return a.patientName.localeCompare(b.patientName);
-      }
-    });
-  }, [testResults, filters]);
+  const getReportByRow = (row: QueueRow): Report | undefined =>
+    reports.find((entry) => entry.sampleId === row.sampleId);
 
-  // Handlers
-  const handleGenerateReport = useCallback((test: TestResult) => {
-    setSelectedTest(test);
-    setGenerateDialogOpen(true);
-    setReportTab(0);
+  const createNewReport = (row: QueueRow): Report => {
+    const now = new Date().toISOString();
+    const criticalFlags = getCriticalFlags(row.tests);
 
-    // Initialize report data
-    const reportId = generateReportID();
-    const autoInterp = generateAutoInterpretation(test.parameters);
-
-    setInterpretation(autoInterp);
-    setClinicalNotes('');
-    setCriticalComments(test.hasCriticalValues ? 'Clinical correlation recommended. Immediate physician notification done.' : '');
-    setSelectedPathologist(pathologists[0]);
-    setSignatureType('none');
-    setSignatureData('');
-    setCertificationAccepted(false);
-
-    setCurrentReportData({
-      reportId,
-      testResult: test,
-      interpretation: autoInterp,
-      clinicalNotes: '',
-      criticalComments: test.hasCriticalValues ? 'Clinical correlation recommended. Immediate physician notification done.' : '',
-      pathologist: pathologists[0],
-      signatureType: 'none',
-      signatureData: '',
-      template: 'Standard',
-      settings: reportSettings,
-      deliveryOptions: deliveryOptions,
-      certificationAccepted: false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-  }, [reportSettings, deliveryOptions]);
-
-  const handleSaveDraft = useCallback(() => {
-    if (!selectedTest || !currentReportData) return;
-
-    const draft: DraftReport = {
-      reportId: currentReportData.reportId!,
-      sampleId: selectedTest.sampleId,
-      tokenNumber: selectedTest.tokenNumber,
-      patientName: selectedTest.patientName,
-      testName: selectedTest.testName,
-      savedBy: selectedPathologist?.name || 'Current User',
-      lastModified: new Date(),
+    return {
+      reportId: `RPT-${Date.now()}`,
+      bookingId: row.bookingId,
+      sampleId: row.sampleId,
+      patientId: row.patientId,
+      testIds: row.tests.map((test) => test.id),
+      packageId: row.packageId,
+      createdAt: now,
+      updatedAt: now,
       status: 'Draft',
-      reportData: {
-        ...currentReportData,
-        interpretation,
-        clinicalNotes,
-        criticalComments,
-        pathologist: selectedPathologist || undefined,
-        signatureType,
-        signatureData,
-        certificationAccepted,
+      generatedBy: currentUser,
+      pathologist: {
+        name: '',
       },
-    };
-
-    setDraftReports([...draftReports, draft]);
-    setSnackbar({ open: true, message: 'Report saved as draft successfully!', severity: 'success' });
-    setGenerateDialogOpen(false);
-  }, [selectedTest, currentReportData, interpretation, clinicalNotes, criticalComments, selectedPathologist, signatureType, signatureData, certificationAccepted, draftReports]);
-
-  const handleValidateReport = useCallback(() => {
-    if (!currentReportData) return;
-
-    const completeReport: ReportData = {
-      ...currentReportData as ReportData,
-      interpretation,
-      clinicalNotes,
-      criticalComments,
-      pathologist: selectedPathologist || undefined,
-      signatureType,
-      signatureData,
-      certificationAccepted,
-      settings: reportSettings,
-      deliveryOptions,
-    };
-
-    const result = validateReport(completeReport);
-    setValidationResult(result);
-    setValidationDialogOpen(true);
-  }, [currentReportData, interpretation, clinicalNotes, criticalComments, selectedPathologist, signatureType, signatureData, certificationAccepted, reportSettings, deliveryOptions]);
-
-  const handlePreviewPDF = useCallback(async () => {
-    if (!currentReportData) return;
-
-    setLoading(true);
-    try {
-      const completeReport: ReportData = {
-        ...currentReportData as ReportData,
-        interpretation,
-        clinicalNotes,
-        criticalComments,
-        pathologist: selectedPathologist || undefined,
-        signatureType,
-        signatureData,
-        certificationAccepted,
-        settings: reportSettings,
-        deliveryOptions,
-      };
-
-      const blob = await generateReportPDF(completeReport);
-      setPdfBlob(blob);
-      setPdfPreviewOpen(true);
-
-      // Open PDF in new tab
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank');
-    } catch (error) {
-      console.error('Error generating PDF:', error);
-      setSnackbar({ open: true, message: 'Error generating PDF preview', severity: 'error' });
-    } finally {
-      setLoading(false);
-    }
-  }, [currentReportData, interpretation, clinicalNotes, criticalComments, selectedPathologist, signatureType, signatureData, certificationAccepted, reportSettings, deliveryOptions]);
-
-  const handlePublishReport = useCallback(async () => {
-    if (!currentReportData || !selectedTest) return;
-
-    // Validate first
-    const completeReport: ReportData = {
-      ...currentReportData as ReportData,
-      interpretation,
-      clinicalNotes,
-      criticalComments,
-      pathologist: selectedPathologist || undefined,
-      signatureType,
-      signatureData,
-      certificationAccepted,
-      settings: reportSettings,
-      deliveryOptions,
-    };
-
-    const validation = validateReport(completeReport);
-    if (!validation.valid) {
-      setValidationResult(validation);
-      setValidationDialogOpen(true);
-      return;
-    }
-
-    setLoading(true);
-    try {
-      // Generate PDF
-      const blob = await generateReportPDF(completeReport);
-
-      // Send notifications
-      const deliveryResults = await sendReportNotifications(deliveryOptions, completeReport, blob);
-
-      // Print if requested
-      if (deliveryOptions.print.enabled) {
-        await printReport(blob, deliveryOptions.print.copies, deliveryOptions.print.printer);
-      }
-
-      // Create published report
-      const published: PublishedReport = {
-        reportId: currentReportData.reportId!,
-        sampleId: selectedTest.sampleId,
-        tokenNumber: selectedTest.tokenNumber,
-        patientName: selectedTest.patientName,
-        testName: selectedTest.testName,
-        department: selectedTest.department,
-        publishedBy: selectedPathologist?.name || 'Current User',
-        publishedTime: new Date(),
-        hasCriticalValues: selectedTest.hasCriticalValues,
-        deliveryStatus: {
-          sms: deliveryResults.sms.success ? 'Sent' : 'Failed',
-          email: deliveryResults.email.success ? 'Sent' : 'Failed',
-          whatsapp: deliveryResults.whatsapp.success ? 'Sent' : 'Failed',
-          portal: deliveryResults.portal.success ? 'Sent' : 'Failed',
+      signatureType: 'Typed',
+      remarks: '',
+      testRemarks: {},
+      criticalFlags,
+      criticalHandled: false,
+      criticalHandledNote: '',
+      pdf: {
+        mode: 'AutoGenerated',
+      },
+      audit: [
+        {
+          at: now,
+          by: currentUser,
+          action: 'Created',
+          notes: 'Draft initialized from completed testing results',
         },
-        viewCount: 0,
-        downloadCount: 0,
-      };
+      ],
+    };
+  };
 
-      setPublishedReports([...publishedReports, published]);
-
-      // Remove from pending
-      setTestResults(testResults.filter(t => t.id !== selectedTest.id));
-
-      setSnackbar({
-        open: true,
-        message: `Report published successfully! Notifications sent via ${Object.entries(deliveryResults).filter(([_, v]) => v.success).map(([k]) => k.toUpperCase()).join(', ')}`,
-        severity: 'success',
-      });
-
-      setGenerateDialogOpen(false);
-    } catch (error) {
-      console.error('Error publishing report:', error);
-      setSnackbar({ open: true, message: 'Error publishing report', severity: 'error' });
-    } finally {
-      setLoading(false);
-    }
-  }, [currentReportData, selectedTest, interpretation, clinicalNotes, criticalComments, selectedPathologist, signatureType, signatureData, certificationAccepted, reportSettings, deliveryOptions, publishedReports, testResults]);
-
-  const handleUseAutoInterpretation = useCallback(() => {
-    if (selectedTest) {
-      const autoInterp = generateAutoInterpretation(selectedTest.parameters);
-      setInterpretation(autoInterp);
-      setSnackbar({ open: true, message: 'Auto-interpretation applied', severity: 'success' });
-    }
-  }, [selectedTest]);
-
-  const handleInsertTemplate = useCallback((template: RemarksTemplate) => {
-    setInterpretation(template.content);
-    setSnackbar({ open: true, message: `Template "${template.title}" applied`, severity: 'success' });
-  }, []);
-
-  const handleClearSignature = useCallback(() => {
-    if (signatureCanvasRef.current) {
-      signatureCanvasRef.current.clear();
-    }
-  }, []);
-
-  const handleSaveSignature = useCallback(() => {
-    if (signatureCanvasRef.current) {
-      const dataUrl = signatureCanvasRef.current.toDataURL();
-      setSignatureData(dataUrl);
-      setSnackbar({ open: true, message: 'Signature saved', severity: 'success' });
-    }
-  }, []);
-
-  // Bulk Generation Handler
-  const handleBulkGenerate = useCallback(() => {
-    const selectedTestIds = Array.from(selectedRows.ids || []);
-    const testsToGenerate = testResults.filter(t => selectedTestIds.includes(t.id));
-    
-    if (testsToGenerate.length === 0) {
-      setSnackbar({ open: true, message: 'Please select at least one test', severity: 'warning' });
+  const openEditor = (row: QueueRow) => {
+    if (row.hasQcIssue) {
+      setPendingGenerateRow(row);
+      setQcOverrideReason('');
+      setQcOverrideDialogOpen(true);
       return;
     }
 
-    setLoading(true);
-    setTimeout(() => {
-      const newDrafts = testsToGenerate.map(test => ({
-        reportId: generateReportID(),
-        sampleId: test.sampleId,
-        tokenNumber: test.tokenNumber,
-        patientName: test.patientName,
-        testName: test.testName,
-        savedBy: 'Current User',
-        lastModified: new Date(),
-        status: 'Draft' as const,
-        reportData: {
-          reportId: generateReportID(),
-          testResult: test,
-          interpretation: generateAutoInterpretation(test.parameters),
-          clinicalNotes: '',
-          criticalComments: test.hasCriticalValues ? 'Critical values detected - immediate physician notification done.' : '',
-          pathologist: undefined,
-          signatureType: 'none' as const,
-          signatureData: '',
-          template: selectedTemplate,
-          settings: reportSettings,
-          deliveryOptions: deliveryOptions,
-          certificationAccepted: false,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      })) as unknown as DraftReport[];
+    const existing = getReportByRow(row);
+    const report = existing ? { ...existing } : createNewReport(row);
 
-      setDraftReports([...draftReports, ...newDrafts]);
-      setBulkGenerateDialogOpen(false);
-      setSelectedRows({ type: 'include', ids: new Set() });
-      setLoading(false);
-      setSnackbar({
-        open: true,
-        message: `${newDrafts.length} reports generated successfully!`,
-        severity: 'success'
-      });
-    }, 2000);
-  }, [selectedRows, testResults, draftReports, selectedTemplate, reportSettings, deliveryOptions]);
+    setSelectedRow(row);
+    setEditingReport(report);
+    setCriticalHandled(Boolean(report.criticalHandled));
+    setCriticalHandledNote(report.criticalHandledNote || '');
+    setEditorOpen(true);
+    setEditorTab(0);
+  };
 
-  // Bulk Publish Handler
-  const handleBulkPublish = useCallback(async () => {
-    const selectedDraftIds = Array.from(selectedRows.ids || []);
-    const draftsToPubish = draftReports.filter(d => selectedDraftIds.includes(d.reportId));
-
-    if (draftsToPubish.length === 0) {
-      setSnackbar({ open: true, message: 'Please select at least one draft report', severity: 'warning' });
+  const proceedGenerateAfterQcOverride = () => {
+    if (!pendingGenerateRow || !qcOverrideReason.trim()) {
+      showSnackbar('QC override reason is required', 'error');
       return;
     }
 
-    setLoading(true);
-    setTimeout(() => {
-      const newPublished = draftsToPubish.map(draft => ({
-        ...draft,
-        status: 'Published' as const,
-        publishedTime: new Date(),
-        deliveryStatus: 'Sent' as const,
-        department: 'Pathology',
-        publishedBy: 'Current User',
-        hasCriticalValues: false,
-        viewCount: 0,
-        downloadCount: 0,
-      })) as unknown as PublishedReport[];
+    const existing = getReportByRow(pendingGenerateRow);
+    const report = existing ? { ...existing } : createNewReport(pendingGenerateRow);
 
-      setPublishedReports([...publishedReports, ...newPublished]);
-      setDraftReports(draftReports.filter(d => !selectedDraftIds.includes(d.reportId)));
-      setBulkPublishDialogOpen(false);
-      setSelectedRows({ type: 'include', ids: new Set() });
-      setLoading(false);
-      setSnackbar({
-        open: true,
-        message: `${newPublished.length} reports published successfully!`,
-        severity: 'success'
-      });
-    }, 2000);
-  }, [selectedRows, draftReports, publishedReports]);
+    report.audit.push({
+      at: new Date().toISOString(),
+      by: currentUser,
+      action: 'Edited',
+      notes: `QC override: ${qcOverrideReason.trim()}`,
+    });
+    report.updatedAt = new Date().toISOString();
 
-  // Export Reports Handler
-  const handleExportReports = useCallback(() => {
-    const selectedIds = Array.from(selectedRows.ids || []);
-    let reportsToExport: any[] = [];
+    setSelectedRow(pendingGenerateRow);
+    setEditingReport(report);
+    setCriticalHandled(Boolean(report.criticalHandled));
+    setCriticalHandledNote(report.criticalHandledNote || '');
 
-    if (exportFormat === 'pdf') {
-      reportsToExport = publishedReports.filter(r => selectedIds.includes(r.reportId));
-      if (reportsToExport.length === 0) {
-        setSnackbar({ open: true, message: 'Please select reports to export', severity: 'warning' });
+    setQcOverrideDialogOpen(false);
+    setPendingGenerateRow(null);
+    setEditorOpen(true);
+  };
+
+  const persistReport = (report: Report, action: 'save' | 'ready') => {
+    const nextReport: Report = {
+      ...report,
+      updatedAt: new Date().toISOString(),
+      generatedBy: report.generatedBy || currentUser,
+      criticalHandled,
+      criticalHandledNote,
+    };
+
+    if (action === 'ready') {
+      if (!nextReport.pathologist.name.trim()) {
+        showSnackbar('Pathologist name is required before Pending Signature', 'error');
         return;
       }
-      // In production, generate PDF files
-      setSnackbar({
-        open: true,
-        message: `${reportsToExport.length} PDF reports ready for download`,
-        severity: 'success'
+
+      if (nextReport.criticalFlags.length > 0 && (!criticalHandled || !criticalHandledNote.trim())) {
+        showSnackbar('Critical handled checkbox and note are required', 'error');
+        return;
+      }
+
+      nextReport.status = 'PendingSignature';
+      nextReport.pathologist.signedAt = new Date().toISOString();
+      nextReport.audit.push({
+        at: new Date().toISOString(),
+        by: currentUser,
+        action: 'Signed',
+        notes: 'Marked ready for signature',
       });
-    } else if (exportFormat === 'excel' || exportFormat === 'csv') {
-      reportsToExport = publishedReports.filter(r => selectedIds.includes(r.reportId));
-      // In production, generate Excel/CSV files
-      setSnackbar({
-        open: true,
-        message: `Exported ${reportsToExport.length} reports as ${exportFormat.toUpperCase()}`,
-        severity: 'success'
-      });
-    } else if (exportFormat === 'docx') {
-      reportsToExport = publishedReports.filter(r => selectedIds.includes(r.reportId));
-      // In production, generate DOCX files
-      setSnackbar({
-        open: true,
-        message: `Exported ${reportsToExport.length} reports as DOCX`,
-        severity: 'success'
+    } else {
+      if (!nextReport.audit.some((item) => item.action === 'Created')) {
+        nextReport.audit.push({
+          at: new Date().toISOString(),
+          by: currentUser,
+          action: 'Created',
+        });
+      }
+      nextReport.status = 'Draft';
+      nextReport.audit.push({
+        at: new Date().toISOString(),
+        by: currentUser,
+        action: 'Edited',
+        notes: 'Draft saved',
       });
     }
 
-    setExportReportDialogOpen(false);
-    setSelectedRows({ type: 'include', ids: new Set() });
-  }, [selectedRows, publishedReports, exportFormat]);
+    upsertReport(nextReport);
+    refreshData();
+    setEditingReport(nextReport);
+    showSnackbar(action === 'ready' ? 'Moved to Pending Signature' : 'Draft saved', 'success');
 
-  // Schedule Report Generation Handler
-  const handleScheduleReportGeneration = useCallback(() => {
-    const selectedTestIds = Array.from(selectedRows.ids || []);
-    if (selectedTestIds.length === 0) {
-      setSnackbar({ open: true, message: 'Please select tests to schedule', severity: 'warning' });
+    if (action === 'ready') {
+      setEditorOpen(false);
+    }
+  };
+
+  const handleUploadPdfClick = (row: QueueRow) => {
+    setPdfUploadTarget(row);
+    uploadPdfInputRef.current?.click();
+  };
+
+  const handleUploadPdfSelected = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file || !pdfUploadTarget) {
       return;
     }
 
-    const scheduledDateTime = new Date(`${scheduleDate}T${scheduleTime}`);
-    setSnackbar({
-      open: true,
-      message: `${selectedTestIds.length} reports scheduled for generation on ${formatDate(scheduledDateTime)}`,
-      severity: 'success'
+    const dataUrl = await toDataUrl(file);
+    const existing = getReportByRow(pdfUploadTarget);
+    const report = existing || createNewReport(pdfUploadTarget);
+
+    report.pdf = {
+      mode: 'Uploaded',
+      fileName: file.name,
+      dataUrl,
+    };
+    report.updatedAt = new Date().toISOString();
+
+    report.audit.push({
+      at: new Date().toISOString(),
+      by: currentUser,
+      action: 'Edited',
+      notes: `PDF uploaded: ${file.name}`,
     });
-    setScheduleReportDialogOpen(false);
-    setSelectedRows({ type: 'include', ids: new Set() });
-  }, [selectedRows, scheduleDate, scheduleTime]);
 
-  // View Report History Handler
-  const handleViewReportHistory = useCallback(() => {
-    let filtered = publishedReports;
+    upsertReport(report);
+    refreshData();
+    showSnackbar('PDF uploaded and attached to report', 'success');
+    event.target.value = '';
+  };
 
-    if (historyFilter === 'week') {
-      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      filtered = publishedReports.filter(r => new Date(r.publishedTime) >= weekAgo);
-    } else if (historyFilter === 'month') {
-      const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-      filtered = publishedReports.filter(r => new Date(r.publishedTime) >= monthAgo);
-    } else if (historyFilter === 'quarter') {
-      const quarterAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-      filtered = publishedReports.filter(r => new Date(r.publishedTime) >= quarterAgo);
-    }
-
-    setReportHistory(filtered);
-    setReportHistoryDialogOpen(true);
-  }, [publishedReports, historyFilter]);
-
-  // Download Draft as Template
-  const handleDownloadAsTemplate = useCallback(() => {
-    if (selectedTest) {
-      const templateData = {
-        testName: selectedTest.testName,
-        department: selectedTest.department,
-        parameters: selectedTest.parameters,
-        generatedAt: new Date().toISOString(),
-      };
-      const dataStr = JSON.stringify(templateData, null, 2);
-      const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
-      const exportFileDefaultName = `template-${selectedTest.testName}.json`;
-      
-      const linkElement = document.createElement('a');
-      linkElement.setAttribute('href', dataUri);
-      linkElement.setAttribute('download', exportFileDefaultName);
-      linkElement.click();
-      
-      setSnackbar({ open: true, message: 'Template downloaded', severity: 'success' });
-    }
-  }, [selectedTest]);
-
-  // Print Reports Handler
-  const handlePrintReports = useCallback(() => {
-    const selectedIds = Array.from(selectedRows.ids || []);
-    const reportsToPrint = publishedReports.filter(r => selectedIds.includes(r.reportId));
-
-    if (reportsToPrint.length === 0) {
-      setSnackbar({ open: true, message: 'Please select reports to print', severity: 'warning' });
+  const openSignDialog = (row: QueueRow) => {
+    const existing = getReportByRow(row);
+    if (!existing) {
+      showSnackbar('Create draft before signing', 'warning');
       return;
     }
 
-    window.print();
-    setSnackbar({
-      open: true,
-      message: `${reportsToPrint.length} reports sent to printer`,
-      severity: 'success'
-    });
-  }, [selectedRows, publishedReports]);
+    setSignTarget(row);
+    setSignType(existing.signatureType || 'Typed');
+    setSignName(existing.pathologist.name || '');
+    setSignRegistrationNo(existing.pathologist.registrationNo || '');
+    setSignImageDataUrl(existing.signatureImageDataUrl);
+    setSignDialogOpen(true);
+  };
 
-  // Archive Report Handler
-  const handleArchiveReports = useCallback(() => {
-    const selectedIds = Array.from(selectedRows.ids || []);
-    const reportsToArchive = publishedReports.filter(r => selectedIds.includes(r.reportId));
+  const applySign = () => {
+    if (!signTarget) return;
 
-    if (reportsToArchive.length === 0) {
-      setSnackbar({ open: true, message: 'Please select reports to archive', severity: 'warning' });
+    const existing = getReportByRow(signTarget);
+    if (!existing) {
+      showSnackbar('Draft not found', 'error');
       return;
     }
 
-    setPublishedReports(publishedReports.filter(r => !selectedIds.includes(r.reportId)));
-    setSnackbar({
-      open: true,
-      message: `${reportsToArchive.length} reports archived successfully`,
-      severity: 'success'
-    });
-  }, [selectedRows, publishedReports]);
+    if (!signName.trim()) {
+      showSnackbar('Pathologist name is required for signing', 'error');
+      return;
+    }
 
-  // DataGrid columns for Ready for Report
-  const readyColumns: GridColDef<TestResult>[] = [
+    if (existing.criticalFlags.length > 0 && !existing.criticalHandled) {
+      showSnackbar('Critical flags must be handled before signing', 'error');
+      return;
+    }
+
+    const updated: Report = {
+      ...existing,
+      signatureType: signType,
+      signatureImageDataUrl: signType === 'UploadedImage' ? signImageDataUrl : undefined,
+      pathologist: {
+        ...existing.pathologist,
+        name: signName,
+        registrationNo: signRegistrationNo || undefined,
+        signedAt: new Date().toISOString(),
+      },
+      status: 'PendingSignature',
+      updatedAt: new Date().toISOString(),
+      audit: [
+        ...existing.audit,
+        {
+          at: new Date().toISOString(),
+          by: currentUser,
+          action: 'Signed',
+          notes: `Signature type: ${signType}`,
+        },
+      ],
+    };
+
+    upsertReport(updated);
+    refreshData();
+    setSignDialogOpen(false);
+    showSnackbar('Report signed and moved to Pending Signature', 'success');
+  };
+
+  const handleSignatureFilePick = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const dataUrl = await toDataUrl(file);
+    setSignImageDataUrl(dataUrl);
+    event.target.value = '';
+  };
+
+  const handlePublish = (row: QueueRow) => {
+    if (row.status === 'Draft') {
+      setPublishConfirmRow(row);
+      return;
+    }
+
+    if (row.status !== 'PendingSignature') {
+      showSnackbar('Only Pending Signature reports can be published', 'warning');
+      return;
+    }
+
+    const published = publishReport(row.reportId || '', currentUser, 'User notified');
+    if (!published) {
+      showSnackbar('Unable to publish report', 'error');
+      return;
+    }
+
+    refreshData();
+    showSnackbar('Report published. User notified. Doctor notification is future scope.', 'success');
+  };
+
+  const confirmDraftPublishOverride = () => {
+    if (!publishConfirmRow) return;
+
+    const report = getReportByRow(publishConfirmRow);
+    if (!report) {
+      showSnackbar('Report not found', 'error');
+      return;
+    }
+
+    const published = publishReport(
+      report.reportId,
+      currentUser,
+      'Published from Draft with override confirm. User notified.'
+    );
+
+    if (!published) {
+      showSnackbar('Publish failed', 'error');
+      return;
+    }
+
+    refreshData();
+    setPublishConfirmRow(null);
+    showSnackbar('Draft published with override. User notified.', 'success');
+  };
+
+  const handlePreview = (row: QueueRow) => {
+    const report = getReportByRow(row);
+    if (!report) {
+      showSnackbar('Create draft before preview', 'warning');
+      return;
+    }
+
+    const html = buildReportPreviewHTML(report, row);
+    const updated = {
+      ...report,
+      pdf: {
+        mode: report.pdf.mode || 'AutoGenerated',
+        fileName: report.pdf.fileName || `${report.reportId}.html`,
+        dataUrl:
+          report.pdf.dataUrl ||
+          `data:text/html;base64,${btoa(unescape(encodeURIComponent(html)))}`,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+
+    upsertReport(updated);
+    refreshData();
+    setPreviewHtml(html);
+    setPreviewOpen(true);
+  };
+
+  const printPreview = () => {
+    if (!previewHtml) return;
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+    printWindow.document.write(previewHtml);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  };
+
+  const handleResend = (row: QueueRow) => {
+    const report = getReportByRow(row);
+    if (!report) {
+      showSnackbar('Report not found', 'error');
+      return;
+    }
+
+    addAuditEvent(report.reportId, currentUser, 'Resent', 'Mock re-send notification');
+    refreshData();
+    showSnackbar('Notification re-sent (mock)', 'success');
+  };
+
+  const columns: GridColDef<QueueRow>[] = [
+    { field: 'token', headerName: 'Token', width: 120 },
+    { field: 'sampleId', headerName: 'Sample ID', width: 150 },
     {
-      field: 'priority',
-      headerName: 'Priority',
-      width: 100,
+      field: 'patientName',
+      headerName: 'Patient',
+      width: 180,
+      renderCell: (params) => (
+        <Box>
+          <Typography variant="body2" fontWeight={600}>
+            {params.row.patientName}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            {params.row.patientMobile}
+          </Typography>
+        </Box>
+      ),
+    },
+    {
+      field: 'tests',
+      headerName: 'Tests',
+      width: 90,
+      valueGetter: (_value, row) => row.tests.length,
+    },
+    {
+      field: 'critical',
+      headerName: 'Critical',
+      width: 110,
       renderCell: (params) => (
         <Chip
-          label={`${getPriorityIcon(params.row.priority)} ${params.row.priority}`}
-          color={getPriorityColor(params.row.priority)}
           size="small"
+          color={params.value ? 'error' : 'default'}
+          label={params.value ? 'Yes' : 'No'}
         />
       ),
     },
     {
-      field: 'sampleId',
-      headerName: 'Sample ID',
-      width: 180,
-      renderCell: (params) => (
-        <Typography variant="body2" fontWeight="bold">
-          {params.value}
-        </Typography>
-      ),
-    },
-    { field: 'tokenNumber', headerName: 'Token', width: 180 },
-    { field: 'patientName', headerName: 'Patient Name', width: 180 },
-    {
-      field: 'age',
-      headerName: 'Age / Gender',
-      width: 140,
-      valueGetter: (_value, row) => `${row.age}Y / ${row.gender?.[0] || ''}`,
-    },
-    { field: 'testName', headerName: 'Test Name', width: 200 },
-    {
-      field: 'department',
-      headerName: 'Department',
-      width: 150,
-      renderCell: (params) => (
-        <Chip label={params.value} size="small" variant="outlined" />
-      ),
-    },
-    {
-      field: 'testCompletedTime',
-      headerName: 'Completed',
-      width: 150,
-      valueGetter: (_value, row) => formatDate(row.testCompletedTime),
-    },
-    {
-      field: 'tatDeadline',
-      headerName: 'TAT Status',
-      width: 140,
-      renderCell: (params) => {
-        const tat = calculateTATStatus(params.row.tatDeadline);
-        return (
-          <Chip
-            label={tat.status}
-            color={tat.color}
-            size="small"
-          />
-        );
-      },
-    },
-    {
-      field: 'hasCriticalValues',
-      headerName: 'Critical',
-      width: 100,
-      renderCell: (params) => params.value ? (
-        <Badge badgeContent="!" color="error">
-          <WarningIcon color="error" />
-        </Badge>
-      ) : null,
-    },
-    {
-      field: 'assignedPathologist',
-      headerName: 'Pathologist',
-      width: 150,
-      valueGetter: (_value, row) => row.assignedPathologist || 'Unassigned',
-    },
-    {
-      field: 'actions',
-      headerName: 'Actions',
-      width: 150,
-      sortable: false,
-      renderCell: (params) => (
-        <Button
-          variant="contained"
-          size="small"
-          onClick={() => handleGenerateReport(params.row)}
-        >
-          Generate
-        </Button>
-      ),
-    },
-  ];
-
-  // DataGrid columns for Draft Reports
-  const draftColumns: GridColDef<DraftReport>[] = [
-    { field: 'sampleId', headerName: 'Sample ID', width: 180 },
-    { field: 'tokenNumber', headerName: 'Token', width: 180 },
-    { field: 'patientName', headerName: 'Patient Name', width: 180 },
-    { field: 'testName', headerName: 'Test Name', width: 200 },
-    { field: 'savedBy', headerName: 'Saved By', width: 150 },
-    {
-      field: 'lastModified',
-      headerName: 'Last Modified',
-      width: 180,
-      valueGetter: (_value, row) => formatDate(row.lastModified),
-    },
-    {
       field: 'status',
       headerName: 'Status',
-      width: 120,
+      width: 170,
       renderCell: (params) => (
-        <Chip label={params.value} color="warning" size="small" />
+        <Chip
+          size="small"
+          label={params.value === 'ReadyToGenerate' ? 'Ready to Generate' : params.value}
+          color={getStatusColor(params.value)}
+        />
       ),
+    },
+    {
+      field: 'updatedAt',
+      headerName: 'Updated At',
+      width: 170,
+      valueGetter: (_value, row) => formatDateTime(row.updatedAt),
     },
     {
       field: 'actions',
       headerName: 'Actions',
-      width: 200,
+      width: 400,
       sortable: false,
       renderCell: (params) => (
-        <Box>
-          <Tooltip title="Edit Draft">
-            <IconButton 
-              size="small" 
-              color="primary"
-              onClick={() => {
-                setSelectedTest({
-                  ...params.row.reportData.testResult,
-                  id: params.row.reportId,
-                } as any);
-                setCurrentReportData(params.row.reportData);
-                setInterpretation((params.row.reportData.interpretation as string) || '');
-                setClinicalNotes((params.row.reportData.clinicalNotes as string) || '');
-                setCriticalComments((params.row.reportData.criticalComments as string) || '');
-                setGenerateDialogOpen(true);
-              }}
-            >
-              <EditIcon />
+        <Stack direction="row" spacing={0.5}>
+          <Tooltip title={params.row.reportId ? 'Edit Draft' : 'Generate Draft'}>
+            <IconButton size="small" color="primary" onClick={() => openEditor(params.row)}>
+              {params.row.reportId ? <EditIcon /> : <AddIcon />}
             </IconButton>
           </Tooltip>
-          <Tooltip title="Delete Draft">
-            <IconButton 
-              size="small" 
-              color="error"
-              onClick={() => {
-                setDraftReports(draftReports.filter(d => d.reportId !== params.row.reportId));
-                setSnackbar({
-                  open: true,
-                  message: 'Draft report deleted',
-                  severity: 'success'
-                });
-              }}
-            >
-              <DeleteIcon />
+          <Tooltip title="Upload PDF">
+            <IconButton size="small" onClick={() => handleUploadPdfClick(params.row)}>
+              <FileUploadIcon />
             </IconButton>
           </Tooltip>
-        </Box>
-      ),
-    },
-  ];
-
-  // DataGrid columns for Published Reports
-  const publishedColumns: GridColDef<PublishedReport>[] = [
-    { field: 'reportId', headerName: 'Report ID', width: 180 },
-    { field: 'sampleId', headerName: 'Sample ID', width: 180 },
-    { field: 'patientName', headerName: 'Patient Name', width: 180 },
-    { field: 'testName', headerName: 'Test Name', width: 200 },
-    { field: 'publishedBy', headerName: 'Published By', width: 150 },
-    {
-      field: 'publishedTime',
-      headerName: 'Published',
-      width: 180,
-      valueGetter: (_value, row) => formatDate(row.publishedTime),
-    },
-    {
-      field: 'hasCriticalValues',
-      headerName: 'Critical',
-      width: 100,
-      renderCell: (params) => params.value ? (
-        <Badge badgeContent="!" color="error">
-          <WarningIcon color="error" />
-        </Badge>
-      ) : null,
-    },
-    {
-      field: 'deliveryStatus',
-      headerName: 'Delivery',
-      width: 120,
-      renderCell: (params) => {
-        const sent = Object.values(params.value).filter(s => s === 'Sent').length;
-        const total = Object.values(params.value).length;
-        return <Chip label={`${sent}/${total}`} size="small" color={sent === total ? 'success' : 'warning'} />;
-      },
-    },
-    {
-      field: 'actions',
-      headerName: 'Actions',
-      width: 200,
-      sortable: false,
-      renderCell: (params) => (
-        <Box>
-          <Tooltip title="View Report">
-            <IconButton 
-              size="small" 
-              color="primary"
-              onClick={() => {
-                setPdfPreviewOpen(true);
-                setSnackbar({
-                  open: true,
-                  message: 'Opening report preview...',
-                  severity: 'info'
-                });
-              }}
-            >
+          <Tooltip title="Sign">
+            <IconButton size="small" onClick={() => openSignDialog(params.row)}>
+              <SignatureIcon />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Publish">
+            <IconButton size="small" color="success" onClick={() => handlePublish(params.row)}>
+              <PublishIcon />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Preview">
+            <IconButton size="small" onClick={() => handlePreview(params.row)}>
               <VisibilityIcon />
             </IconButton>
           </Tooltip>
-          <Tooltip title="Download PDF">
-            <IconButton 
-              size="small" 
-              color="primary"
-              onClick={() => {
-                setSnackbar({
-                  open: true,
-                  message: `Report "${params.row.testName}" downloaded`,
-                  severity: 'success'
-                });
-              }}
-            >
-              <GetAppIcon />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Print Report">
-            <IconButton 
-              size="small" 
-              color="primary"
-              onClick={() => {
-                window.print();
-                setSnackbar({
-                  open: true,
-                  message: 'Report sent to printer',
-                  severity: 'success'
-                });
-              }}
-            >
-              <PrintIcon />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Resend Report">
-            <IconButton 
-              size="small" 
-              color="secondary"
-              onClick={() => {
-                setSnackbar({
-                  open: true,
-                  message: `Report resent to patient and doctor`,
-                  severity: 'success'
-                });
-              }}
-            >
+          <Tooltip title="Re-send notification">
+            <IconButton size="small" onClick={() => handleResend(params.row)}>
               <SendIcon />
             </IconButton>
           </Tooltip>
-        </Box>
+        </Stack>
       ),
     },
   ];
 
   return (
     <DashboardLayout>
-    <Box sx={{ p: 3 }}>
-      {/* Page Header */}
-      <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography 
-          variant="h4" 
-          fontWeight="bold"
-          sx={{ 
-            background: 'linear-gradient(45deg, #2196F3 30%, #21CBF3 90%)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            backgroundClip: 'text'
-          }}
-        >
+      <Box sx={{ p: 3 }}>
+        <Typography variant="h4" fontWeight={700} gutterBottom>
           Report Generation
         </Typography>
-        <Box>
-          <Button
-            variant="outlined"
-            startIcon={<RefreshIcon />}
-            sx={{ mr: 2 }}
-          >
-            Refresh
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<AddIcon />}
-            sx={{ mr: 2 }}
-            onClick={() => setBulkGenerateDialogOpen(true)}
-          >
-            Bulk Generate
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<SendIcon />}
-            sx={{ mr: 2 }}
-            onClick={() => setBulkPublishDialogOpen(true)}
-          >
-            Bulk Publish
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<GetAppIcon />}
-            sx={{ mr: 2 }}
-            onClick={() => setExportReportDialogOpen(true)}
-          >
-            Export
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<PrintIcon />}
-            sx={{ mr: 2 }}
-            onClick={handlePrintReports}
-          >
-            Print
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<AssignmentIcon />}
-            sx={{ mr: 2 }}
-            onClick={() => setScheduleReportDialogOpen(true)}
-          >
-            Schedule
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<VisibilityIcon />}
-            sx={{ mr: 2 }}
-            onClick={handleViewReportHistory}
-          >
-            History
-          </Button>
-          <Button
-            variant="contained"
-            startIcon={<CloudUploadIcon />}
-            onClick={() => setUploadExternalDialogOpen(true)}
-          >
-            Upload
-          </Button>
-        </Box>
+
+        <Grid container spacing={2} sx={{ mb: 2 }}>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <Card>
+              <CardContent>
+                <Typography variant="caption" color="text.secondary">Ready to Generate</Typography>
+                <Typography variant="h5" fontWeight={700}>{stats.readyToGenerate}</Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <Card>
+              <CardContent>
+                <Typography variant="caption" color="text.secondary">Draft</Typography>
+                <Typography variant="h5" fontWeight={700}>{stats.draft}</Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <Card>
+              <CardContent>
+                <Typography variant="caption" color="text.secondary">Pending Signature</Typography>
+                <Typography variant="h5" fontWeight={700}>{stats.pendingSignature}</Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+          <Grid size={{ xs: 12, md: 3 }}>
+            <Card>
+              <CardContent>
+                <Typography variant="caption" color="text.secondary">Published Today</Typography>
+                <Typography variant="h5" fontWeight={700}>{stats.publishedToday}</Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+        </Grid>
+
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Grid container spacing={2}>
+              <Grid size={{ xs: 12, md: 4 }}>
+                <TextField
+                  fullWidth
+                  label="Search"
+                  placeholder="patient/mobile/token/sample/report"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                />
+              </Grid>
+              <Grid size={{ xs: 12, md: 2 }}>
+                <FormControl fullWidth>
+                  <InputLabel>Status</InputLabel>
+                  <Select
+                    value={statusFilter}
+                    label="Status"
+                    onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
+                  >
+                    <MenuItem value="All">All</MenuItem>
+                    <MenuItem value="ReadyToGenerate">Ready to Generate</MenuItem>
+                    <MenuItem value="Draft">Draft</MenuItem>
+                    <MenuItem value="PendingSignature">Pending Signature</MenuItem>
+                    <MenuItem value="Published">Published</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+              <Grid size={{ xs: 12, md: 2 }}>
+                <TextField
+                  fullWidth
+                  type="date"
+                  label="From"
+                  InputLabelProps={{ shrink: true }}
+                  value={dateFrom}
+                  onChange={(event) => setDateFrom(event.target.value)}
+                />
+              </Grid>
+              <Grid size={{ xs: 12, md: 2 }}>
+                <TextField
+                  fullWidth
+                  type="date"
+                  label="To"
+                  InputLabelProps={{ shrink: true }}
+                  value={dateTo}
+                  onChange={(event) => setDateTo(event.target.value)}
+                />
+              </Grid>
+              <Grid size={{ xs: 12, md: 2 }} sx={{ display: 'flex', alignItems: 'center' }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={criticalOnly}
+                      onChange={(event) => setCriticalOnly(event.target.checked)}
+                    />
+                  }
+                  label="Critical only"
+                />
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent>
+            <Box sx={{ height: 620 }}>
+              <DataGrid rows={filteredRows} columns={columns} pageSizeOptions={[10, 25, 50]} />
+            </Box>
+          </CardContent>
+        </Card>
       </Box>
 
-      {/* Quick Stats Cards */}
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid size={{ xs: 12, sm: 6, md: 2.4 }}>
-          <Card sx={{ cursor: 'pointer', '&:hover': { boxShadow: 6 } }} onClick={() => setActiveTab(0)}>
-            <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                <AssignmentIcon sx={{ fontSize: 40, color: 'primary.main', mr: 2 }} />
-                <Box>
-                  <Typography variant="h4" fontWeight="bold">
-                    {quickStats.readyForReport}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Ready for Report
-                  </Typography>
-                </Box>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
+      <input
+        ref={uploadPdfInputRef}
+        type="file"
+        accept="application/pdf,.html,.htm"
+        hidden
+        onChange={handleUploadPdfSelected}
+      />
 
-        <Grid size={{ xs: 12, sm: 6, md: 2.4 }}>
-          <Card sx={{ cursor: 'pointer', '&:hover': { boxShadow: 6 } }} onClick={() => setActiveTab(1)}>
-            <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                <DraftsIcon sx={{ fontSize: 40, color: 'warning.main', mr: 2 }} />
-                <Box>
-                  <Typography variant="h4" fontWeight="bold">
-                    {quickStats.draftReports}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Draft Reports
-                  </Typography>
-                </Box>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        <Grid size={{ xs: 12, sm: 6, md: 2.4 }}>
-          <Card sx={{ cursor: 'pointer', '&:hover': { boxShadow: 6 } }} onClick={() => setActiveTab(2)}>
-            <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                <PublishIcon sx={{ fontSize: 40, color: 'success.main', mr: 2 }} />
-                <Box>
-                  <Typography variant="h4" fontWeight="bold">
-                    {quickStats.publishedToday}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Published Today
-                  </Typography>
-                </Box>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        <Grid size={{ xs: 12, sm: 6, md: 2.4 }}>
-          <Card sx={{ cursor: 'pointer', '&:hover': { boxShadow: 6 } }}>
-            <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                <DrawIcon sx={{ fontSize: 40, color: 'secondary.main', mr: 2 }} />
-                <Box>
-                  <Typography variant="h4" fontWeight="bold">
-                    {quickStats.pendingSignature}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Pending Signature
-                  </Typography>
-                </Box>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        <Grid size={{ xs: 12, sm: 6, md: 2.4 }}>
-          <Card sx={{ cursor: 'pointer', '&:hover': { boxShadow: 6 } }}>
-            <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                <ReportProblemIcon sx={{ fontSize: 40, color: 'error.main', mr: 2 }} />
-                <Box>
-                  <Typography variant="h4" fontWeight="bold">
-                    {quickStats.criticalReports}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Critical Reports
-                  </Typography>
-                </Box>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
-
-      {/* Main Content Tabs */}
-      <Paper sx={{ width: '100%' }}>
-        <Tabs value={activeTab} onChange={(_e, newValue) => setActiveTab(newValue)}>
-          <Tab label="Ready for Report" />
-          <Tab label="Draft Reports" />
-          <Tab label="Published Today" />
-        </Tabs>
-
-        {/* Tab Content */}
-        <Box sx={{ p: 2 }}>
-          {/* Ready for Report Tab */}
-          {activeTab === 0 && (
-            <Box>
-              {/* Filters */}
-              <Grid container spacing={2} sx={{ mb: 2 }}>
-                <Grid size={{ xs: 12, md: 3 }}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    placeholder="Search token, patient, sample ID..."
-                    value={filters.search}
-                    onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-                    InputProps={{
-                      startAdornment: (
-                        <InputAdornment position="start">
-                          <SearchIcon />
-                        </InputAdornment>
-                      ),
-                    }}
-                  />
-                </Grid>
-                <Grid size={{ xs: 12, md: 2 }}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel>Department</InputLabel>
-                    <Select
-                      value={filters.department}
-                      label="Department"
-                      onChange={(e) => setFilters({ ...filters, department: e.target.value })}
-                    >
-                      <MenuItem value="All">All Departments</MenuItem>
-                      <MenuItem value="Hematology">Hematology</MenuItem>
-                      <MenuItem value="Biochemistry">Biochemistry</MenuItem>
-                      <MenuItem value="Microbiology">Microbiology</MenuItem>
-                      <MenuItem value="Serology">Serology</MenuItem>
-                      <MenuItem value="Immunology">Immunology</MenuItem>
-                    </Select>
-                  </FormControl>
-                </Grid>
-                <Grid size={{ xs: 12, md: 2 }}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel>Priority</InputLabel>
-                    <Select
-                      value={filters.priority}
-                      label="Priority"
-                      onChange={(e) => setFilters({ ...filters, priority: e.target.value as Priority | 'All' })}
-                    >
-                      <MenuItem value="All">All Priorities</MenuItem>
-                      <MenuItem value="Normal">Normal</MenuItem>
-                      <MenuItem value="Urgent">Urgent</MenuItem>
-                      <MenuItem value="Critical">Critical</MenuItem>
-                    </Select>
-                  </FormControl>
-                </Grid>
-                <Grid size={{ xs: 12, md: 2 }}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel>Pathologist</InputLabel>
-                    <Select
-                      value={filters.pathologist}
-                      label="Pathologist"
-                      onChange={(e) => setFilters({ ...filters, pathologist: e.target.value })}
-                    >
-                      <MenuItem value="All">All</MenuItem>
-                      <MenuItem value="Assigned to Me">Assigned to Me</MenuItem>
-                      <MenuItem value="Unassigned">Unassigned</MenuItem>
-                    </Select>
-                  </FormControl>
-                </Grid>
-                <Grid size={{ xs: 12, md: 2 }}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel>Sort By</InputLabel>
-                    <Select
-                      value={filters.sortBy}
-                      label="Sort By"
-                      onChange={(e) => setFilters({ ...filters, sortBy: e.target.value as 'TAT' | 'Priority' | 'PatientName' })}
-                    >
-                      <MenuItem value="TAT">TAT</MenuItem>
-                      <MenuItem value="Priority">Priority</MenuItem>
-                      <MenuItem value="PatientName">Patient Name</MenuItem>
-                    </Select>
-                  </FormControl>
-                </Grid>
-              </Grid>
-
-              {/* DataGrid */}
-              <Box sx={{ height: 600, width: '100%' }}>
-                <DataGrid
-                  rows={filteredTestResults}
-                  columns={readyColumns}
-                  getRowId={(row) => row.id}
-                  checkboxSelection
-                  rowSelectionModel={selectedRows}
-                  onRowSelectionModelChange={setSelectedRows}
-                  pageSizeOptions={[10, 25, 50]}
-                  initialState={{
-                    pagination: { paginationModel: { pageSize: 25 } },
-                  }}
-                  getRowClassName={(params) =>
-                    params.row.priority === 'Critical' ? 'critical-row' :
-                    params.row.priority === 'Urgent' ? 'urgent-row' : ''
-                  }
-                  sx={{
-                    '& .critical-row': {
-                      bgcolor: 'error.50',
-                    },
-                    '& .urgent-row': {
-                      bgcolor: 'warning.50',
-                    },
-                  }}
-                />
-              </Box>
-            </Box>
-          )}
-
-          {/* Draft Reports Tab */}
-          {activeTab === 1 && (
-            <Box>
-              <Typography variant="h6" sx={{ mb: 2 }}>
-                Draft Reports ({draftReports.length})
-              </Typography>
-              <Box sx={{ height: 600, width: '100%' }}>
-                <DataGrid
-                  rows={draftReports}
-                  columns={draftColumns}
-                  getRowId={(row) => row.reportId}
-                  pageSizeOptions={[10, 25, 50]}
-                  initialState={{
-                    pagination: { paginationModel: { pageSize: 25 } },
-                  }}
-                />
-              </Box>
-            </Box>
-          )}
-
-          {/* Published Reports Tab */}
-          {activeTab === 2 && (
-            <Box>
-              <Typography variant="h6" sx={{ mb: 2 }}>
-                Published Reports Today ({publishedReports.length})
-              </Typography>
-              <Box sx={{ height: 600, width: '100%' }}>
-                <DataGrid
-                  rows={publishedReports}
-                  columns={publishedColumns}
-                  getRowId={(row) => row.reportId}
-                  pageSizeOptions={[10, 25, 50]}
-                  initialState={{
-                    pagination: { paginationModel: { pageSize: 25 } },
-                  }}
-                />
-              </Box>
-            </Box>
-          )}
-        </Box>
-      </Paper>
-
-      {/* Generate Report Dialog */}
-      <Dialog
-        open={generateDialogOpen}
-        onClose={() => setGenerateDialogOpen(false)}
-        maxWidth="xl"
-        fullWidth
-        fullScreen
-      >
+      <Dialog open={editorOpen} onClose={() => setEditorOpen(false)} maxWidth="xl" fullWidth>
         <DialogTitle>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Typography variant="h5" fontWeight="bold">
-              Generate Report - {selectedTest?.patientName} ({selectedTest?.sampleId})
+          {editingReport?.reportId || 'Report Draft'}
+          {selectedRow && (
+            <Typography variant="body2" color="text.secondary">
+              {selectedRow.patientName} • {selectedRow.sampleId}
             </Typography>
-            <IconButton onClick={() => setGenerateDialogOpen(false)}>
-              <CloseIcon />
-            </IconButton>
-          </Box>
+          )}
         </DialogTitle>
         <DialogContent dividers>
-          <Grid container spacing={3}>
-            {/* Left Panel - Live Preview */}
-            <Grid size={{ xs: 12, md: 6 }}>
-              <Paper sx={{ p: 3, height: '80vh', overflow: 'auto', bgcolor: '#f5f5f5' }} elevation={3}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                  <Typography variant="h6" fontWeight="bold">
-                    Report Preview
-                  </Typography>
-                  <Box>
-                    <IconButton size="small" onClick={() => setZoomLevel(Math.max(50, zoomLevel - 25))}>
-                      <ZoomOutIcon />
-                    </IconButton>
-                    <Typography variant="body2" component="span" sx={{ mx: 1 }}>
-                      {zoomLevel}%
-                    </Typography>
-                    <IconButton size="small" onClick={() => setZoomLevel(Math.min(150, zoomLevel + 25))}>
-                      <ZoomInIcon />
-                    </IconButton>
-                  </Box>
-                </Box>
+          {editingReport && selectedRow && (
+            <>
+              <Tabs
+                value={editorTab}
+                onChange={(_event, value) => setEditorTab(value)}
+                sx={{ mb: 2 }}
+              >
+                {REPORT_EDITOR_TABS.map((tab) => (
+                  <Tab key={tab} label={tab} />
+                ))}
+              </Tabs>
 
-                {/* Report Preview Content */}
-                <Paper sx={{ p: 3, transform: `scale(${zoomLevel / 100})`, transformOrigin: 'top left', width: `${10000 / zoomLevel}%` }}>
-                  {/* Header */}
-                  <Box sx={{ textAlign: 'center', mb: 3, borderBottom: 2, pb: 2 }}>
-                    <Typography variant="h4" fontWeight="bold" color="primary">
-                      NXA PATHOLOGY LAB
-                    </Typography>
-                    <Typography variant="body2">
-                      123 Medical Street, City, State - 400001
-                    </Typography>
-                    <Typography variant="body2">
-                      Phone: +91-1234567890 | Email: lab@nxapath.com | Website: www.nxapath.com
-                    </Typography>
-                    <Typography variant="body2">
-                      NABL Reg: NAB-123456 | License: LAB/2024/0001
-                    </Typography>
-                  </Box>
-
-                  {/* Report Title */}
-                  <Box sx={{ textAlign: 'center', mb: 3 }}>
-                    <Typography variant="h5" fontWeight="bold">
-                      LABORATORY REPORT
-                    </Typography>
-                    <Typography variant="body2">
-                      Report ID: {currentReportData?.reportId}
-                    </Typography>
-                    <Typography variant="body2">
-                      Report Date: {formatDate(new Date())}
-                    </Typography>
-                  </Box>
-
-                  {/* Patient Information */}
-                  {selectedTest && (
-                    <>
-                      <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 1 }}>
-                        PATIENT INFORMATION
-                      </Typography>
-                      <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1, mb: 3, fontSize: '0.875rem' }}>
-                        <Box><strong>Patient Name:</strong> {selectedTest.patientName}</Box>
-                        <Box><strong>Patient ID:</strong> {selectedTest.patientId}</Box>
-                        <Box><strong>Age / Gender:</strong> {selectedTest.age} Years / {selectedTest.gender}</Box>
-                        <Box><strong>Sample ID:</strong> {selectedTest.sampleId}</Box>
-                        <Box><strong>Referred By Dr.:</strong> {selectedTest.referredBy || 'Self'}</Box>
-                        <Box><strong>Token No:</strong> {selectedTest.tokenNumber}</Box>
-                        <Box><strong>Mobile:</strong> {selectedTest.mobile}</Box>
-                        <Box><strong>Collection Date:</strong> {formatDate(selectedTest.collectionDate)}</Box>
-                      </Box>
-
-                      {/* Test Information */}
-                      <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 1 }}>
-                        TEST INFORMATION
-                      </Typography>
-                      <Box sx={{ mb: 3, fontSize: '0.875rem' }}>
-                        <Box><strong>Test Name:</strong> {selectedTest.testName}</Box>
-                        <Box><strong>Department:</strong> {selectedTest.department}</Box>
-                        <Box><strong>Sample Type:</strong> {selectedTest.sampleType}</Box>
-                        <Box><strong>Fasting Status:</strong> {selectedTest.fastingStatus}</Box>
-                      </Box>
-
-                      {/* Results Table */}
-                      <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 1 }}>
-                        INVESTIGATION RESULTS
-                      </Typography>
-                      <Box sx={{ mb: 3 }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem' }}>
-                          <thead>
-                            <tr style={{ backgroundColor: '#2980b9', color: 'white' }}>
-                              <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>PARAMETER</th>
-                              <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'right' }}>RESULT</th>
-                              <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>UNIT</th>
-                              <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'left' }}>NORMAL RANGE</th>
-                              <th style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'center' }}>FLAG</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {selectedTest.parameters.map((param, idx) => (
-                              <tr key={idx}>
-                                <td style={{ border: '1px solid #ddd', padding: '8px' }}>{param.name}</td>
-                                <td style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'right' }}>{param.result}</td>
-                                <td style={{ border: '1px solid #ddd', padding: '8px' }}>{param.unit}</td>
-                                <td style={{ border: '1px solid #ddd', padding: '8px' }}>{param.normalRange}</td>
-                                <td style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'center', color: param.flag ? '#dc143c' : 'inherit', fontWeight: param.flag ? 'bold' : 'normal' }}>
-                                  {param.flag ? `${param.flag} ${param.flag.includes('H') ? '↑' : '↓'}` : ''}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </Box>
-
-                      {/* Critical Values Alert */}
-                      {selectedTest.hasCriticalValues && (
-                        <Box sx={{ p: 2, mb: 3, border: '2px solid #dc143c', backgroundColor: '#fff0f0', borderRadius: 1 }}>
-                          <Typography variant="subtitle2" fontWeight="bold" color="error" sx={{ mb: 1 }}>
-                            ⚠️ CRITICAL VALUE ALERT
-                          </Typography>
-                          {selectedTest.parameters.filter(p => p.isCritical || p.flag === 'HH' || p.flag === 'LL').map((param, idx) => (
-                            <Typography key={idx} variant="body2">
-                              {param.name}: {param.result} {param.unit} ({param.flag === 'HH' ? 'Critical High' : param.flag === 'LL' ? 'Critical Low' : param.flag})
-                            </Typography>
-                          ))}
-                          <Typography variant="body2" sx={{ mt: 1 }}>
-                            {criticalComments || 'Immediate clinical correlation recommended.'}
-                          </Typography>
-                        </Box>
-                      )}
-
-                      {/* Interpretation */}
-                      <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 1 }}>
-                        INTERPRETATION / REMARKS
-                      </Typography>
-                      <Typography variant="body2" sx={{ mb: 3, whiteSpace: 'pre-line' }}>
-                        {interpretation || 'No specific comments'}
-                      </Typography>
-
-                      {/* Methodology */}
-                      {reportSettings.includeMethodology && (
-                        <>
-                          <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 1 }}>
-                            METHOD / TECHNOLOGY
-                          </Typography>
-                          <Typography variant="body2" sx={{ mb: 3 }}>
-                            Test performed on: Automated Hematology Analyzer<br />
-                            Methodology: Standard laboratory protocols as per guidelines
-                          </Typography>
-                        </>
-                      )}
-
-                      {/* QC Statement */}
-                      {reportSettings.includeQCStatement && (
-                        <>
-                          <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 1 }}>
-                            QUALITY CONTROL
-                          </Typography>
-                          <Typography variant="body2" sx={{ mb: 3 }}>
-                            Internal Quality Control: Passed<br />
-                            External Quality Assurance: Enrolled
-                          </Typography>
-                        </>
-                      )}
-
-                      {/* Footer with Signature */}
-                      <Box sx={{ mt: 5, pt: 3, borderTop: 1, borderColor: 'divider' }}>
-                        <Grid container>
-                          <Grid size={6}>
-                            <Typography variant="body2">
-                              <strong>Tested By:</strong> Lab Technician
-                            </Typography>
-                            <Typography variant="body2">
-                              {formatDate(selectedTest.testCompletedTime)}
-                            </Typography>
-                          </Grid>
-                          <Grid size={6} sx={{ textAlign: 'right' }}>
-                            {selectedPathologist && (
-                              <>
-                                {signatureData && signatureType !== 'none' && (
-                                  <Box sx={{ mb: 1 }}>
-                                    <img src={signatureData} alt="Signature" style={{ maxWidth: 150, maxHeight: 60 }} />
-                                  </Box>
-                                )}
-                                <Typography variant="body2" fontWeight="bold">
-                                  {selectedPathologist.name}
-                                </Typography>
-                                <Typography variant="body2">
-                                  {selectedPathologist.qualification}
-                                </Typography>
-                                <Typography variant="body2">
-                                  Reg. No: {selectedPathologist.registrationNumber}
-                                </Typography>
-                              </>
-                            )}
-                          </Grid>
-                        </Grid>
-                        <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', mt: 2, fontStyle: 'italic' }}>
-                          {signatureType === 'none' ? 'This is a computer-generated report. Signature not required.' : 'This report is verified and approved by the pathologist.'}
+              {editorTab === 0 && (
+                <Grid container spacing={2}>
+                  <Grid size={{ xs: 12, md: 4 }}>
+                    <Card variant="outlined">
+                      <CardContent>
+                        <Typography variant="subtitle2" gutterBottom>
+                          Patient & Booking Summary
                         </Typography>
-                      </Box>
-                    </>
-                  )}
-                </Paper>
-              </Paper>
-            </Grid>
+                        <Typography variant="body2">Patient: {selectedRow.patientName}</Typography>
+                        <Typography variant="body2">Mobile: {selectedRow.patientMobile}</Typography>
+                        <Typography variant="body2">Token: {selectedRow.token}</Typography>
+                        <Typography variant="body2">Sample: {selectedRow.sampleId}</Typography>
+                        <Typography variant="body2">Booking ID: {selectedRow.bookingId}</Typography>
+                      </CardContent>
+                    </Card>
+                  </Grid>
 
-            {/* Right Panel - Edit Controls */}
-            <Grid size={{ xs: 12, md: 6 }}>
-              <Paper sx={{ p: 2, height: '80vh', overflow: 'auto' }} elevation={3}>
-                <Tabs value={reportTab} onChange={(_e, newValue) => setReportTab(newValue)}>
-                  <Tab label="Report Data" />
-                  <Tab label="Interpretation" />
-                  <Tab label="Signature" />
-                  <Tab label="Settings" />
-                  <Tab label="Delivery" />
-                </Tabs>
-
-                <Box sx={{ mt: 2 }}>
-                  {/* Tab 1 - Report Data */}
-                  {reportTab === 0 && selectedTest && (
-                    <Box>
-                      <Typography variant="h6" sx={{ mb: 2 }}>
-                        Patient & Test Information
-                      </Typography>
-                      <Paper sx={{ p: 2, mb: 2 }} variant="outlined">
-                        <Typography variant="subtitle2" fontWeight="bold" color="primary" sx={{ mb: 1 }}>
-                          Patient Details
+                  <Grid size={{ xs: 12, md: 8 }}>
+                    <Card variant="outlined">
+                      <CardContent>
+                        <Typography variant="subtitle2" gutterBottom>
+                          Report Meta
                         </Typography>
-                        <Typography variant="body2">Name: {selectedTest.patientName}</Typography>
-                        <Typography variant="body2">Age/Gender: {selectedTest.age} Years / {selectedTest.gender}</Typography>
-                        <Typography variant="body2">Patient ID: {selectedTest.patientId}</Typography>
-                        <Typography variant="body2">Mobile: {selectedTest.mobile}</Typography>
-                        <Typography variant="body2">Email: {selectedTest.email || 'Not provided'}</Typography>
-                      </Paper>
-
-                      <Paper sx={{ p: 2, mb: 2 }} variant="outlined">
-                        <Typography variant="subtitle2" fontWeight="bold" color="primary" sx={{ mb: 1 }}>
-                          Sample Details
-                        </Typography>
-                        <Typography variant="body2">Sample ID: {selectedTest.sampleId}</Typography>
-                        <Typography variant="body2">Token: {selectedTest.tokenNumber}</Typography>
-                        <Typography variant="body2">Collection: {formatDate(selectedTest.collectionDate)}</Typography>
-                        <Typography variant="body2">Sample Type: {selectedTest.sampleType}</Typography>
-                      </Paper>
-
-                      <Paper sx={{ p: 2 }} variant="outlined">
-                        <Typography variant="subtitle2" fontWeight="bold" color="primary" sx={{ mb: 1 }}>
-                          Test Results
-                        </Typography>
-                        <Typography variant="body2" sx={{ mb: 1 }}>
-                          Test: {selectedTest.testName} ({selectedTest.department})
-                        </Typography>
-                        <Typography variant="body2" sx={{ mb: 1 }}>
-                          Parameters: {selectedTest.parameters.length}
-                        </Typography>
-                        <Typography variant="body2" sx={{ mb: 1 }}>
-                          Abnormal Values: {selectedTest.parameters.filter(p => p.flag).length}
-                        </Typography>
-                        {selectedTest.hasCriticalValues && (
-                          <Chip
-                            label="Has Critical Values"
-                            color="error"
-                            size="small"
-                            icon={<WarningIcon />}
-                          />
-                        )}
-                      </Paper>
-                    </Box>
-                  )}
-
-                  {/* Tab 2 - Interpretation */}
-                  {reportTab === 1 && (
-                    <Box>
-                      <Typography variant="h6" sx={{ mb: 2 }}>
-                        Interpretation & Remarks
-                      </Typography>
-
-                      {/* Auto-Interpretation */}
-                      <Paper sx={{ p: 2, mb: 2, bgcolor: '#e3f2fd' }} variant="outlined">
-                        <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
-                          Auto-Interpretation
-                        </Typography>
-                        <Typography variant="body2" sx={{ mb: 1, whiteSpace: 'pre-line' }}>
-                          {selectedTest && generateAutoInterpretation(selectedTest.parameters)}
-                        </Typography>
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          startIcon={<AddIcon />}
-                          onClick={handleUseAutoInterpretation}
-                        >
-                          Use Auto-Interpretation
-                        </Button>
-                      </Paper>
-
-                      {/* Templates */}
-                      <FormControl fullWidth sx={{ mb: 2 }}>
-                        <InputLabel>Insert Template</InputLabel>
-                        <Select
-                          value=""
-                          label="Insert Template"
-                          onChange={(e) => {
-                            const template = remarksTemplates.find(t => t.id === e.target.value);
-                            if (template) handleInsertTemplate(template);
-                          }}
-                        >
-                          <MenuItem value="">Select a template...</MenuItem>
-                          {remarksTemplates.map((template) => (
-                            <MenuItem key={template.id} value={template.id}>
-                              {template.title} ({template.category})
-                            </MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-
-                      {/* Pathologist Remarks */}
-                      <TextField
-                        fullWidth
-                        multiline
-                        rows={10}
-                        label="Pathologist Remarks"
-                        value={interpretation}
-                        onChange={(e) => setInterpretation(e.target.value)}
-                        sx={{ mb: 2 }}
-                        helperText={`${interpretation.length} characters`}
-                      />
-
-                      {/* Critical Value Comments */}
-                      {selectedTest?.hasCriticalValues && (
                         <TextField
                           fullWidth
+                          label="Overall remarks"
                           multiline
-                          rows={3}
-                          label="Critical Value Comments (Mandatory)"
-                          value={criticalComments}
-                          onChange={(e) => setCriticalComments(e.target.value)}
-                          required
-                          error={!criticalComments}
-                          helperText={!criticalComments ? 'Required for critical values' : ''}
+                          minRows={3}
+                          value={editingReport.remarks || ''}
+                          onChange={(event) =>
+                            setEditingReport({
+                              ...editingReport,
+                              remarks: event.target.value,
+                            })
+                          }
                           sx={{ mb: 2 }}
                         />
-                      )}
-
-                      {/* Clinical Notes (Internal) */}
-                      <TextField
-                        fullWidth
-                        multiline
-                        rows={4}
-                        label="Clinical Notes (Internal - Not Printed)"
-                        value={clinicalNotes}
-                        onChange={(e) => setClinicalNotes(e.target.value)}
-                        sx={{ mb: 2 }}
-                        helperText="For internal record only"
-                      />
-                    </Box>
-                  )}
-
-                  {/* Tab 3 - Signature */}
-                  {reportTab === 2 && (
-                    <Box>
-                      <Typography variant="h6" sx={{ mb: 2 }}>
-                        Pathologist & Signature
-                      </Typography>
-
-                      {/* Pathologist Selection */}
-                      <FormControl fullWidth sx={{ mb: 3 }}>
-                        <Autocomplete
-                          value={selectedPathologist}
-                          onChange={(_e, newValue) => setSelectedPathologist(newValue)}
-                          options={pathologists}
-                          getOptionLabel={(option) => `${option.name} (${option.qualification})`}
-                          renderInput={(params) => <TextField {...params} label="Select Pathologist" />}
-                        />
-                      </FormControl>
-
-                      {/* Signature Type */}
-                      <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
-                        Signature Options
-                      </Typography>
-                      <RadioGroup value={signatureType} onChange={(e) => setSignatureType(e.target.value as any)}>
-                        <FormControlLabel
-                          value="digital"
-                          control={<Radio />}
-                          label="Digital Signature (Pre-uploaded)"
-                        />
-                        {signatureType === 'digital' && (
-                          <Box sx={{ ml: 4, mb: 2 }}>
-                            <Button variant="outlined" component="label" startIcon={<CloudUploadIcon />}>
-                              Upload Signature
-                              <input
-                                type="file"
-                                hidden
-                                accept="image/*"
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    const reader = new FileReader();
-                                    reader.onload = (event) => {
-                                      setSignatureData(event.target?.result as string);
-                                    };
-                                    reader.readAsDataURL(file);
-                                  }
-                                }}
-                              />
-                            </Button>
-                            {signatureData && (
-                              <Box sx={{ mt: 2 }}>
-                                <Typography variant="caption">Preview:</Typography>
-                                <Box sx={{ border: 1, borderColor: 'divider', p: 1, mt: 1 }}>
-                                  <img src={signatureData} alt="Signature" style={{ maxWidth: 200, maxHeight: 80 }} />
-                                </Box>
-                              </Box>
-                            )}
-                          </Box>
-                        )}
-
-                        <FormControlLabel
-                          value="drawn"
-                          control={<Radio />}
-                          label="Draw Signature"
-                        />
-                        {signatureType === 'drawn' && (
-                          <Box sx={{ ml: 4, mb: 2 }}>
-                            <Paper variant="outlined" sx={{ p: 1 }}>
-                              <SignatureCanvas
-                                ref={signatureCanvasRef}
-                                canvasProps={{
-                                  width: 400,
-                                  height: 150,
-                                  className: 'signature-canvas',
-                                  style: { border: '1px solid #ccc' },
-                                }}
-                              />
-                            </Paper>
-                            <Box sx={{ mt: 1 }}>
-                              <Button size="small" onClick={handleClearSignature} startIcon={<DeleteIcon />}>
-                                Clear
-                              </Button>
-                              <Button size="small" onClick={handleSaveSignature} startIcon={<SaveIcon />} sx={{ ml: 1 }}>
-                                Save Signature
-                              </Button>
-                            </Box>
-                          </Box>
-                        )}
-
-                        <FormControlLabel
-                          value="none"
-                          control={<Radio />}
-                          label="No Signature (Computer-generated report)"
-                        />
-                      </RadioGroup>
-
-                      {/* Certification */}
-                      <Box sx={{ mt: 3 }}>
-                        <FormControlLabel
-                          control={
-                            <Checkbox
-                              checked={certificationAccepted}
-                              onChange={(e) => setCertificationAccepted(e.target.checked)}
+                        <Grid container spacing={2}>
+                          <Grid size={{ xs: 12, md: 6 }}>
+                            <TextField
+                              fullWidth
+                              label="Pathologist name"
+                              value={editingReport.pathologist.name}
+                              onChange={(event) =>
+                                setEditingReport({
+                                  ...editingReport,
+                                  pathologist: {
+                                    ...editingReport.pathologist,
+                                    name: event.target.value,
+                                  },
+                                })
+                              }
                             />
-                          }
-                          label="I certify that this report is accurate and verified"
-                        />
-                      </Box>
-                    </Box>
-                  )}
+                          </Grid>
+                          <Grid size={{ xs: 12, md: 6 }}>
+                            <TextField
+                              fullWidth
+                              label="Registration no"
+                              value={editingReport.pathologist.registrationNo || ''}
+                              onChange={(event) =>
+                                setEditingReport({
+                                  ...editingReport,
+                                  pathologist: {
+                                    ...editingReport.pathologist,
+                                    registrationNo: event.target.value,
+                                  },
+                                })
+                              }
+                            />
+                          </Grid>
+                        </Grid>
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                </Grid>
+              )}
 
-                  {/* Tab 4 - Settings */}
-                  {reportTab === 3 && (
-                    <Box>
-                      <Typography variant="h6" sx={{ mb: 2 }}>
-                        Report Settings
-                      </Typography>
-
-                      <FormControl fullWidth sx={{ mb: 2 }}>
-                        <InputLabel>Report Template</InputLabel>
-                        <Select value="Standard" label="Report Template">
-                          <MenuItem value="Standard">Standard Template</MenuItem>
-                          <MenuItem value="Detailed">Detailed Template</MenuItem>
-                          <MenuItem value="Minimal">Minimal Template</MenuItem>
-                          <MenuItem value="Branded">Branded Template</MenuItem>
-                        </Select>
-                      </FormControl>
-
-                      <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
-                        Include in Report
-                      </Typography>
-                      <FormControlLabel
-                        control={<Checkbox checked={reportSettings.includeGraphs} onChange={(e) => setReportSettings({ ...reportSettings, includeGraphs: e.target.checked })} />}
-                        label="Include Graphs/Charts"
-                      />
-                      <FormControlLabel
-                        control={<Checkbox checked={reportSettings.includePreviousResults} onChange={(e) => setReportSettings({ ...reportSettings, includePreviousResults: e.target.checked })} />}
-                        label="Include Previous Results"
-                      />
-                      <FormControlLabel
-                        control={<Checkbox checked={reportSettings.includeQCStatement} onChange={(e) => setReportSettings({ ...reportSettings, includeQCStatement: e.target.checked })} />}
-                        label="Include QC Statement"
-                      />
-                      <FormControlLabel
-                        control={<Checkbox checked={reportSettings.includeMethodology} onChange={(e) => setReportSettings({ ...reportSettings, includeMethodology: e.target.checked })} />}
-                        label="Include Methodology"
-                      />
-                      <FormControlLabel
-                        control={<Checkbox checked={reportSettings.showNABLLogo} onChange={(e) => setReportSettings({ ...reportSettings, showNABLLogo: e.target.checked })} />}
-                        label="Show NABL Logo"
-                      />
-
-                      <Divider sx={{ my: 2 }} />
-
-                      <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
-                        Watermark
-                      </Typography>
-                      <FormControlLabel
-                        control={
-                          <Switch
-                            checked={reportSettings.watermark?.enabled}
-                            onChange={(e) => setReportSettings({
-                              ...reportSettings,
-                              watermark: { ...reportSettings.watermark!, enabled: e.target.checked },
-                            })}
-                          />
-                        }
-                        label="Add Watermark"
-                      />
-                      {reportSettings.watermark?.enabled && (
-                        <Box sx={{ ml: 2 }}>
-                          <TextField
-                            fullWidth
-                            size="small"
-                            label="Watermark Text"
-                            value={reportSettings.watermark.text}
-                            onChange={(e) => setReportSettings({
-                              ...reportSettings,
-                              watermark: { ...reportSettings.watermark!, text: e.target.value },
-                            })}
-                            sx={{ mb: 2 }}
-                          />
-                          <Typography variant="caption">Opacity: {reportSettings.watermark.opacity}%</Typography>
-                          <Slider
-                            value={reportSettings.watermark.opacity}
-                            onChange={(_e, newValue) => setReportSettings({
-                              ...reportSettings,
-                              watermark: { ...reportSettings.watermark!, opacity: newValue as number },
-                            })}
-                            min={10}
-                            max={100}
-                            step={10}
-                          />
+              {editorTab === 1 && (
+                <Stack spacing={2}>
+                  {selectedRow.tests.map((test) => (
+                    <Card key={test.id} variant="outlined">
+                      <CardContent>
+                        <Typography variant="subtitle2" gutterBottom>
+                          {test.test.testName}
+                        </Typography>
+                        <Box sx={{ maxHeight: 220, overflow: 'auto', mb: 1 }}>
+                          {test.parameterValues.length === 0 && (
+                            <Typography variant="body2" color="text.secondary">
+                              No parameter values available.
+                            </Typography>
+                          )}
+                          {test.parameterValues.map((parameter) => (
+                            <Box
+                              key={parameter.parameterId}
+                              sx={{
+                                display: 'grid',
+                                gridTemplateColumns: '2fr 1fr 1fr 2fr 1fr',
+                                gap: 1,
+                                py: 0.75,
+                                borderBottom: '1px solid',
+                                borderColor: 'divider',
+                              }}
+                            >
+                              <Typography variant="body2">{parameter.parameterName}</Typography>
+                              <Typography variant="body2">{parameter.value}</Typography>
+                              <Typography variant="body2">{parameter.unit}</Typography>
+                              <Typography variant="body2">{parameter.normalRange}</Typography>
+                              <Chip
+                                size="small"
+                                color={parameter.isCritical ? 'error' : parameter.flag === 'High' || parameter.flag === 'Low' ? 'warning' : 'default'}
+                                label={parameter.flag || 'Normal'}
+                              />
+                            </Box>
+                          ))}
                         </Box>
-                      )}
-                    </Box>
-                  )}
-
-                  {/* Tab 5 - Delivery */}
-                  {reportTab === 4 && (
-                    <Box>
-                      <Typography variant="h6" sx={{ mb: 2 }}>
-                        Delivery Options
-                      </Typography>
-
-                      <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
-                        Notify Patient
-                      </Typography>
-                      <FormControlLabel
-                        control={
-                          <Checkbox
-                            checked={deliveryOptions.notifyPatient.sms}
-                            onChange={(e) => setDeliveryOptions({
-                              ...deliveryOptions,
-                              notifyPatient: { ...deliveryOptions.notifyPatient, sms: e.target.checked },
-                            })}
-                          />
-                        }
-                        label={`Send SMS to ${selectedTest?.mobile || 'patient'}`}
-                      />
-                      <FormControlLabel
-                        control={
-                          <Checkbox
-                            checked={deliveryOptions.notifyPatient.email}
-                            onChange={(e) => setDeliveryOptions({
-                              ...deliveryOptions,
-                              notifyPatient: { ...deliveryOptions.notifyPatient, email: e.target.checked },
-                            })}
-                          />
-                        }
-                        label={`Send Email to ${selectedTest?.email || 'patient (if available)'}`}
-                      />
-                      <FormControlLabel
-                        control={
-                          <Checkbox
-                            checked={deliveryOptions.notifyPatient.whatsapp}
-                            onChange={(e) => setDeliveryOptions({
-                              ...deliveryOptions,
-                              notifyPatient: { ...deliveryOptions.notifyPatient, whatsapp: e.target.checked },
-                            })}
-                          />
-                        }
-                        label="Send WhatsApp Message"
-                      />
-
-                      <Divider sx={{ my: 2 }} />
-
-                      <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
-                        Notify Doctor
-                      </Typography>
-                      <FormControlLabel
-                        control={
-                          <Checkbox
-                            checked={deliveryOptions.notifyDoctor}
-                            onChange={(e) => setDeliveryOptions({ ...deliveryOptions, notifyDoctor: e.target.checked })}
-                          />
-                        }
-                        label="Send report to referring doctor"
-                      />
-                      {deliveryOptions.notifyDoctor && (
                         <TextField
                           fullWidth
-                          size="small"
-                          label="Doctor Email"
-                          value={deliveryOptions.doctorEmail}
-                          onChange={(e) => setDeliveryOptions({ ...deliveryOptions, doctorEmail: e.target.value })}
-                          sx={{ ml: 4, mb: 2 }}
+                          label="Remarks for this test"
+                          value={editingReport.testRemarks?.[test.id] || ''}
+                          onChange={(event) =>
+                            setEditingReport({
+                              ...editingReport,
+                              testRemarks: {
+                                ...(editingReport.testRemarks || {}),
+                                [test.id]: event.target.value,
+                              },
+                            })
+                          }
                         />
-                      )}
+                      </CardContent>
+                    </Card>
+                  ))}
+                </Stack>
+              )}
 
-                      <Divider sx={{ my: 2 }} />
+              {editorTab === 2 && (
+                <Stack spacing={2}>
+                  <FormControl fullWidth>
+                    <InputLabel>Signature Type</InputLabel>
+                    <Select
+                      value={editingReport.signatureType}
+                      label="Signature Type"
+                      onChange={(event) =>
+                        setEditingReport({
+                          ...editingReport,
+                          signatureType: event.target.value as SignatureType,
+                        })
+                      }
+                    >
+                      <MenuItem value="Typed">Typed name</MenuItem>
+                      <MenuItem value="UploadedImage">Uploaded image</MenuItem>
+                      <MenuItem value="Digital">Digital (future)</MenuItem>
+                    </Select>
+                  </FormControl>
 
-                      <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
-                        Portal Upload
-                      </Typography>
-                      <FormControlLabel
-                        control={
-                          <Checkbox
-                            checked={deliveryOptions.uploadToPortal}
-                            onChange={(e) => setDeliveryOptions({ ...deliveryOptions, uploadToPortal: e.target.checked })}
-                          />
-                        }
-                        label="Upload to Patient Portal"
+                  {editingReport.signatureType === 'UploadedImage' && (
+                    <Box>
+                      <Button
+                        variant="outlined"
+                        startIcon={<FileUploadIcon />}
+                        onClick={() => uploadSignatureInputRef.current?.click()}
+                      >
+                        Upload Signature Image
+                      </Button>
+                      <input
+                        ref={uploadSignatureInputRef}
+                        hidden
+                        type="file"
+                        accept="image/*"
+                        onChange={async (event) => {
+                          const file = event.target.files?.[0];
+                          if (!file) return;
+                          const dataUrl = await toDataUrl(file);
+                          setEditingReport({
+                            ...editingReport,
+                            signatureImageDataUrl: dataUrl,
+                          });
+                          event.target.value = '';
+                        }}
                       />
-                      <FormControlLabel
-                        control={
-                          <Checkbox
-                            checked={deliveryOptions.uploadToABDM}
-                            onChange={(e) => setDeliveryOptions({ ...deliveryOptions, uploadToABDM: e.target.checked })}
+                      {editingReport.signatureImageDataUrl && (
+                        <Box sx={{ mt: 1 }}>
+                          <img
+                            src={editingReport.signatureImageDataUrl}
+                            alt="signature"
+                            style={{ maxHeight: 80 }}
                           />
-                        }
-                        label="Upload to ABDM (Ayushman Bharat)"
-                      />
-
-                      <Divider sx={{ my: 2 }} />
-
-                      <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
-                        Print Options
-                      </Typography>
-                      <FormControlLabel
-                        control={
-                          <Checkbox
-                            checked={deliveryOptions.print.enabled}
-                            onChange={(e) => setDeliveryOptions({
-                              ...deliveryOptions,
-                              print: { ...deliveryOptions.print, enabled: e.target.checked },
-                            })}
-                          />
-                        }
-                        label="Print immediately after publish"
-                      />
-                      {deliveryOptions.print.enabled && (
-                        <Box sx={{ ml: 4 }}>
-                          <FormControl size="small" sx={{ minWidth: 120 }}>
-                            <InputLabel>Copies</InputLabel>
-                            <Select
-                              value={deliveryOptions.print.copies}
-                              label="Copies"
-                              onChange={(e) => setDeliveryOptions({
-                                ...deliveryOptions,
-                                print: { ...deliveryOptions.print, copies: e.target.value as number },
-                              })}
-                            >
-                              <MenuItem value={1}>1 Copy</MenuItem>
-                              <MenuItem value={2}>2 Copies</MenuItem>
-                              <MenuItem value={3}>3 Copies</MenuItem>
-                              <MenuItem value={4}>4 Copies</MenuItem>
-                              <MenuItem value={5}>5 Copies</MenuItem>
-                            </Select>
-                          </FormControl>
                         </Box>
                       )}
                     </Box>
                   )}
-                </Box>
-              </Paper>
-            </Grid>
-          </Grid>
-        </DialogContent>
 
-        <DialogActions sx={{ p: 2, gap: 1 }}>
-          <Button onClick={() => setGenerateDialogOpen(false)} color="inherit">
-            Cancel
-          </Button>
-          <Button onClick={handleSaveDraft} variant="outlined" startIcon={<SaveIcon />}>
-            Save as Draft
-          </Button>
-          <Button onClick={handlePreviewPDF} variant="outlined" startIcon={<VisibilityIcon />} disabled={loading}>
-            Preview PDF
-          </Button>
-          <Button onClick={handleValidateReport} variant="outlined" startIcon={<CheckCircleIcon />}>
-            Validate Report
-          </Button>
-          <Button
-            onClick={handlePublishReport}
-            variant="contained"
-            size="large"
-            startIcon={<PublishIcon />}
-            disabled={loading}
-          >
-            {loading ? <CircularProgress size={24} /> : 'Publish Report'}
-          </Button>
-        </DialogActions>
-      </Dialog>
+                  {editingReport.criticalFlags.length > 0 && (
+                    <Alert severity="warning">
+                      This report contains {editingReport.criticalFlags.length} critical flags.
+                    </Alert>
+                  )}
 
-      {/* Validation Dialog */}
-      <Dialog open={validationDialogOpen} onClose={() => setValidationDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Report Validation</DialogTitle>
-        <DialogContent>
-          {validationResult && (
-            <Box>
-              <Typography variant="h6" color={validationResult.valid ? 'success.main' : 'error.main'} sx={{ mb: 2 }}>
-                {validationResult.valid ? '✓ Validation Passed' : '✗ Validation Failed'}
-              </Typography>
-
-              {validationResult.errors.length > 0 && (
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" fontWeight="bold" color="error">
-                    Errors:
-                  </Typography>
-                  <List dense>
-                    {validationResult.errors.map((error, idx) => (
-                      <ListItem key={idx}>
-                        <ListItemIcon>
-                          <CancelIcon color="error" />
-                        </ListItemIcon>
-                        <ListItemText primary={error} />
-                      </ListItem>
-                    ))}
-                  </List>
-                </Box>
+                  {editingReport.criticalFlags.length > 0 && (
+                    <>
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={criticalHandled}
+                            onChange={(event) => setCriticalHandled(event.target.checked)}
+                          />
+                        }
+                        label="Critical values handled"
+                      />
+                      <TextField
+                        fullWidth
+                        label="Critical handling note"
+                        value={criticalHandledNote}
+                        onChange={(event) => setCriticalHandledNote(event.target.value)}
+                      />
+                    </>
+                  )}
+                </Stack>
               )}
-
-              {validationResult.warnings.length > 0 && (
-                <Box>
-                  <Typography variant="subtitle2" fontWeight="bold" color="warning.main">
-                    Warnings:
-                  </Typography>
-                  <List dense>
-                    {validationResult.warnings.map((warning, idx) => (
-                      <ListItem key={idx}>
-                        <ListItemIcon>
-                          <WarningIcon color="warning" />
-                        </ListItemIcon>
-                        <ListItemText primary={warning} />
-                      </ListItem>
-                    ))}
-                  </List>
-                </Box>
-              )}
-            </Box>
+            </>
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setValidationDialogOpen(false)}>Close</Button>
+          <Button onClick={() => setEditorOpen(false)}>Close</Button>
+          <Button
+            variant="outlined"
+            startIcon={<DescriptionIcon />}
+            onClick={() => {
+              if (!editingReport || !selectedRow) return;
+              const html = buildReportPreviewHTML(editingReport, selectedRow);
+              setPreviewHtml(html);
+              setPreviewOpen(true);
+            }}
+          >
+            Print to PDF
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => editingReport && persistReport(editingReport, 'save')}
+          >
+            Save Draft
+          </Button>
+          <Button
+            variant="contained"
+            color="success"
+            onClick={() => editingReport && persistReport(editingReport, 'ready')}
+          >
+            Mark Ready for Signature
+          </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Upload External Report Dialog */}
-      <Dialog 
-        open={uploadExternalDialogOpen} 
-        onClose={() => setUploadExternalDialogOpen(false)}
+      <Dialog
+        open={qcOverrideDialogOpen}
+        onClose={() => setQcOverrideDialogOpen(false)}
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 1 }}>
-          <CloudUploadIcon />
-          Upload External Report
-        </DialogTitle>
-        <DialogContent sx={{ pt: 3 }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {/* File Upload Area */}
-            <Box
-              sx={{
-                border: '2px dashed',
-                borderColor: externalReportFile ? 'success.main' : 'primary.main',
-                borderRadius: 2,
-                p: 3,
-                textAlign: 'center',
-                cursor: 'pointer',
-                backgroundColor: externalReportFile ? 'success.lighter' : 'action.hover',
-                transition: 'all 0.3s ease',
-                '&:hover': {
-                  borderColor: 'primary.main',
-                  backgroundColor: 'action.selected',
-                }
-              }}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".pdf,.jpg,.jpeg,.png"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    setExternalReportFile(file);
-                    setExternalReportName(file.name);
-                  }
-                }}
-                style={{ display: 'none' }}
-              />
-              <CloudUploadIcon sx={{ fontSize: 48, color: 'primary.main', mb: 1 }} />
-              <Typography variant="h6" sx={{ mb: 1 }}>
-                {externalReportFile ? 'File Selected ✓' : 'Click to Upload or Drag & Drop'}
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                {externalReportFile ? externalReportName : 'PDF, JPG, or PNG (Max 10MB)'}
-              </Typography>
-              {externalReportFile && (
-                <Button
-                  size="small"
-                  color="error"
-                  sx={{ mt: 1 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setExternalReportFile(null);
-                    setExternalReportName('');
-                  }}
-                >
-                  Remove File
-                </Button>
-              )}
-            </Box>
+        <DialogTitle>QC Override Required</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 2 }}>
+            One or more completed tests have QC status not Passed. Provide reason to continue.
+          </Typography>
+          <TextField
+            fullWidth
+            label="Override reason"
+            multiline
+            minRows={3}
+            value={qcOverrideReason}
+            onChange={(event) => setQcOverrideReason(event.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setQcOverrideDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={proceedGenerateAfterQcOverride}>
+            Continue
+          </Button>
+        </DialogActions>
+      </Dialog>
 
-            {/* Report Name */}
-            <TextField
-              label="Report Name"
-              value={externalReportName}
-              onChange={(e) => setExternalReportName(e.target.value)}
-              placeholder="e.g., CT Scan Report - Feb 2026"
-              fullWidth
-              size="small"
-            />
-
-            {/* Test Type (if applicable) */}
-            <FormControl fullWidth size="small">
-              <InputLabel>Test Type (Optional)</InputLabel>
+      <Dialog open={signDialogOpen} onClose={() => setSignDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Sign Report</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <FormControl fullWidth>
+              <InputLabel>Signature Type</InputLabel>
               <Select
-                label="Test Type (Optional)"
-                defaultValue=""
+                value={signType}
+                label="Signature Type"
+                onChange={(event) => setSignType(event.target.value as SignatureType)}
               >
-                <MenuItem value="">None</MenuItem>
-                <MenuItem value="radiology">Radiology</MenuItem>
-                <MenuItem value="cardiology">Cardiology</MenuItem>
-                <MenuItem value="ultrasound">Ultrasound</MenuItem>
-                <MenuItem value="ecg">ECG</MenuItem>
-                <MenuItem value="pathology">Pathology</MenuItem>
+                <MenuItem value="Typed">Typed name</MenuItem>
+                <MenuItem value="UploadedImage">Uploaded image</MenuItem>
+                <MenuItem value="Digital">Digital (future)</MenuItem>
               </Select>
             </FormControl>
-
-            {/* Notes */}
             <TextField
-              label="Additional Notes"
-              value={externalReportNotes}
-              onChange={(e) => setExternalReportNotes(e.target.value)}
-              placeholder="Enter any relevant notes about this report..."
-              multiline
-              rows={3}
               fullWidth
-              size="small"
+              label="Pathologist name"
+              value={signName}
+              onChange={(event) => setSignName(event.target.value)}
             />
-
-            {/* Information Alert */}
-            <Alert severity="info">
-              <Typography variant="body2">
-                External reports will be attached to the patient's file and included in the final report.
-              </Typography>
-            </Alert>
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button 
-            onClick={() => {
-              setUploadExternalDialogOpen(false);
-              setExternalReportFile(null);
-              setExternalReportName('');
-              setExternalReportNotes('');
-            }}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            onClick={() => {
-              if (externalReportFile) {
-                setSnackbar({
-                  open: true,
-                  message: `Report "${externalReportName}" uploaded successfully!`,
-                  severity: 'success'
-                });
-                setUploadExternalDialogOpen(false);
-                setExternalReportFile(null);
-                setExternalReportName('');
-                setExternalReportNotes('');
-              } else {
-                setSnackbar({
-                  open: true,
-                  message: 'Please select a file to upload',
-                  severity: 'warning'
-                });
-              }
-            }}
-            disabled={!externalReportFile}
-          >
-            Upload Report
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Bulk Generate Reports Dialog */}
-      <Dialog open={bulkGenerateDialogOpen} onClose={() => setBulkGenerateDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 1 }}>
-          <AddIcon /> Bulk Generate Reports
-        </DialogTitle>
-        <DialogContent sx={{ pt: 3 }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <Typography variant="body2" color="text.secondary">
-              {Array.from(selectedRows.ids || []).length} test(s) selected
-            </Typography>
-
-            <FormControl fullWidth>
-              <InputLabel>Report Template</InputLabel>
-              <Select value={selectedTemplate} onChange={(e) => setSelectedTemplate(e.target.value as any)} label="Report Template">
-                <MenuItem value="standard">Standard Template</MenuItem>
-                <MenuItem value="detailed">Detailed Template</MenuItem>
-                <MenuItem value="summary">Summary Template</MenuItem>
-              </Select>
-            </FormControl>
-
-            <FormControlLabel
-              control={<Checkbox defaultChecked />}
-              label="Include Previous Results"
-            />
-            <FormControlLabel
-              control={<Checkbox defaultChecked />}
-              label="Include QC Statement"
-            />
-            <FormControlLabel
-              control={<Checkbox defaultChecked />}
-              label="Add Auto-Interpretation"
-            />
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setBulkGenerateDialogOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleBulkGenerate} disabled={loading}>
-            {loading ? <CircularProgress size={24} sx={{ mr: 1 }} /> : ''} Generate
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Bulk Publish Reports Dialog */}
-      <Dialog open={bulkPublishDialogOpen} onClose={() => setBulkPublishDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 1 }}>
-          <SendIcon /> Bulk Publish Reports
-        </DialogTitle>
-        <DialogContent sx={{ pt: 3 }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <Typography variant="body2" color="text.secondary">
-              {Array.from(selectedRows.ids || []).length} draft(s) selected
-            </Typography>
-
-            <FormControl fullWidth>
-              <InputLabel>Publish Format</InputLabel>
-              <Select value={bulkPublishFormat} onChange={(e) => setBulkPublishFormat(e.target.value as any)} label="Publish Format">
-                <MenuItem value="pdf">PDF to Email</MenuItem>
-                <MenuItem value="email">Email (Direct)</MenuItem>
-                <MenuItem value="print">Print</MenuItem>
-              </Select>
-            </FormControl>
-
-            <FormControlLabel
-              control={<Checkbox defaultChecked />}
-              label="Notify Patient"
-            />
-            <FormControlLabel
-              control={<Checkbox defaultChecked />}
-              label="Notify Referring Doctor"
-            />
-            <FormControlLabel
-              control={<Checkbox />}
-              label="Upload to Patient Portal"
-            />
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setBulkPublishDialogOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleBulkPublish} disabled={loading}>
-            {loading ? <CircularProgress size={24} sx={{ mr: 1 }} /> : ''} Publish
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Export Reports Dialog */}
-      <Dialog open={exportReportDialogOpen} onClose={() => setExportReportDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 1 }}>
-          <GetAppIcon /> Export Reports
-        </DialogTitle>
-        <DialogContent sx={{ pt: 3 }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <Typography variant="body2" color="text.secondary">
-              {Array.from(selectedRows.ids || []).length} report(s) selected
-            </Typography>
-
-            <FormControl fullWidth>
-              <InputLabel>Export Format</InputLabel>
-              <Select value={exportFormat} onChange={(e) => setExportFormat(e.target.value as any)} label="Export Format">
-                <MenuItem value="pdf">PDF Files</MenuItem>
-                <MenuItem value="excel">Excel Spreadsheet</MenuItem>
-                <MenuItem value="csv">CSV File</MenuItem>
-                <MenuItem value="docx">Word Document</MenuItem>
-              </Select>
-            </FormControl>
-
-            <Alert severity="info">
-              <Typography variant="body2">
-                Reports will be exported and downloaded to your device.
-              </Typography>
-            </Alert>
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setExportReportDialogOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleExportReports}>
-            Export
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Schedule Report Generation Dialog */}
-      <Dialog open={scheduleReportDialogOpen} onClose={() => setScheduleReportDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 1 }}>
-          <TimeIcon /> Schedule Report Generation
-        </DialogTitle>
-        <DialogContent sx={{ pt: 3 }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <Typography variant="body2" color="text.secondary">
-              {Array.from(selectedRows.ids || []).length} test(s) will be scheduled
-            </Typography>
-
             <TextField
-              label="Schedule Date"
-              type="date"
-              value={scheduleDate}
-              onChange={(e) => setScheduleDate(e.target.value)}
-              InputLabelProps={{ shrink: true }}
+              fullWidth
+              label="Registration no"
+              value={signRegistrationNo}
+              onChange={(event) => setSignRegistrationNo(event.target.value)}
             />
-
-            <TextField
-              label="Schedule Time"
-              type="time"
-              value={scheduleTime}
-              onChange={(e) => setScheduleTime(e.target.value)}
-              InputLabelProps={{ shrink: true }}
-            />
-
-            <Alert severity="info">
-              <Typography variant="body2">
-                Reports will be automatically generated at the scheduled time.
-              </Typography>
-            </Alert>
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setScheduleReportDialogOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleScheduleReportGeneration}>
-            Schedule
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Report History Dialog */}
-      <Dialog open={reportHistoryDialogOpen} onClose={() => setReportHistoryDialogOpen(false)} maxWidth="md" fullWidth>
-        <DialogTitle sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <VisibilityIcon /> Report History
-          </Box>
-          <FormControl sx={{ minWidth: 150 }} size="small">
-            <InputLabel>Time Period</InputLabel>
-            <Select value={historyFilter} onChange={(e) => setHistoryFilter(e.target.value as any)} label="Time Period">
-              <MenuItem value="all">All Time</MenuItem>
-              <MenuItem value="week">Last 7 Days</MenuItem>
-              <MenuItem value="month">Last 30 Days</MenuItem>
-              <MenuItem value="quarter">Last 90 Days</MenuItem>
-            </Select>
-          </FormControl>
-        </DialogTitle>
-        <DialogContent sx={{ pt: 3 }}>
-          {reportHistory.length === 0 ? (
-            <Typography color="text.secondary">No reports found for the selected period.</Typography>
-          ) : (
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, maxHeight: 400, overflow: 'auto' }}>
-              {reportHistory.map((report) => (
-                <Paper key={report.reportId} sx={{ p: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Box>
-                    <Typography variant="subtitle2" fontWeight="bold">
-                      {report.patientName} - {report.testName}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Published: {formatDate(new Date(report.publishedTime))}
-                    </Typography>
+            {signType === 'UploadedImage' && (
+              <Box>
+                <Button variant="outlined" onClick={() => uploadSignatureInputRef.current?.click()}>
+                  Upload Signature
+                </Button>
+                <input
+                  ref={uploadSignatureInputRef}
+                  hidden
+                  type="file"
+                  accept="image/*"
+                  onChange={handleSignatureFilePick}
+                />
+                {signImageDataUrl && (
+                  <Box sx={{ mt: 1 }}>
+                    <img src={signImageDataUrl} alt="sign" style={{ maxHeight: 80 }} />
                   </Box>
-                  <Chip
-                    icon={<CheckCircleIcon />}
-                    label="Published"
-                    color="success"
-                    variant="outlined"
-                  />
-                </Paper>
-              ))}
-            </Box>
-          )}
+                )}
+              </Box>
+            )}
+          </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setReportHistoryDialogOpen(false)}>Close</Button>
+          <Button onClick={() => setSignDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={applySign}>
+            Sign
+          </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Snackbar */}
+      <Dialog open={Boolean(publishConfirmRow)} onClose={() => setPublishConfirmRow(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Publish Draft with Override?</DialogTitle>
+        <DialogContent>
+          <Alert severity="warning">
+            This report is still Draft. Publish override will skip strict Pending Signature flow.
+          </Alert>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPublishConfirmRow(null)}>Cancel</Button>
+          <Button variant="contained" color="warning" onClick={confirmDraftPublishOverride}>
+            Publish Override
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={previewOpen} onClose={() => setPreviewOpen(false)} maxWidth="lg" fullWidth>
+        <DialogTitle>Report Preview</DialogTitle>
+        <DialogContent dividers>
+          <Box
+            sx={{
+              border: '1px solid',
+              borderColor: 'divider',
+              minHeight: 400,
+              p: 1,
+              bgcolor: 'grey.50',
+            }}
+          >
+            <iframe
+              title="report-preview"
+              srcDoc={previewHtml}
+              style={{ width: '100%', height: 520, border: 'none' }}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPreviewOpen(false)}>Close</Button>
+          <Button startIcon={<PrintIcon />} variant="contained" onClick={printPreview}>
+            Print
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Snackbar
         open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        autoHideDuration={3000}
+        onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
       >
-        <Alert onClose={() => setSnackbar({ ...snackbar, open: false })} severity={snackbar.severity}>
+        <Alert
+          onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
+          severity={snackbar.severity}
+          variant="filled"
+        >
           {snackbar.message}
         </Alert>
       </Snackbar>
-      </Box>
     </DashboardLayout>
   );
 }
